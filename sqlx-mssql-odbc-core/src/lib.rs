@@ -61,6 +61,10 @@ mod type_info;
 mod types;
 mod value;
 
+#[cfg(feature = "any")]
+#[doc(hidden)]
+pub mod any;
+
 #[cfg(feature = "offline")]
 mod describe;
 

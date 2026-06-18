@@ -11,7 +11,7 @@ categories = ["database"]
 rust-version = "1.96"
 
 [workspace]
-members = ["sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
+members = ["sqlx-mssql-odbc-cli","sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
 
 [features]
 default = []

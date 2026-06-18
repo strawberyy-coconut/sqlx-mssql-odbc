@@ -6,6 +6,7 @@ edition = "2024"
 
 [features]
 default = []
+any = ["sqlx-core/any"]
 bigdecimal = ["dep:bigdecimal", "sqlx-core/bigdecimal"]
 chrono = ["dep:chrono", "sqlx-core/chrono"]
 decimal = ["rust_decimal"]
@@ -30,7 +31,7 @@ odbc-api = "28"
 rust_decimal = { version = "1.36.0", default-features = false, features = ["std"], optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"], optional = true }
 serde_json = { version = "1.0.142", features = ["raw_value"], optional = true }
-sqlx-core = { version = "=0.9.0", default-features = false }
+sqlx-core = { version = "=0.9.0", default-features = false, features = ["any"] }
 sqlx-macros-core = { version = "=0.9.0", optional = true, features = ["macros"] }
 thiserror = "2.0.17"
 tokio = { version = "1.25.0", features = ["rt"], optional = true }
