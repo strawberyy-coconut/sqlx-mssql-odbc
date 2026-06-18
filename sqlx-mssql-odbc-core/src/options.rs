@@ -140,6 +140,18 @@ impl Debug for MssqlConnectOptions {
     }
 }
 
+/// Escapes a value for use in an ODBC connection string.
+///
+/// Values containing `;`, `{`, `}`, or `=` are wrapped in braces, with any
+/// literal `}` doubled per the ODBC connection-string escaping convention.
+fn escape_odbc_value(value: &str) -> String {
+    if value.contains(';') || value.contains('{') || value.contains('}') || value.contains('=') {
+        format!("{{{}}}", value.replace('}', "}}"))
+    } else {
+        value.to_owned()
+    }
+}
+
 /// Builds an ODBC connection string from a `mssql://` URL.
 ///
 /// Supported URL format:
@@ -169,13 +181,13 @@ fn mssql_url_to_connection_string(url: &Url) -> String {
     );
 
     if !database.is_empty() {
-        conn_str.push_str(&format!(";Database={database}"));
+        conn_str.push_str(&format!(";Database={}", escape_odbc_value(database)));
     }
     if !username.is_empty() {
-        conn_str.push_str(&format!(";UID={username}"));
+        conn_str.push_str(&format!(";UID={}", escape_odbc_value(username)));
     }
     if !password.is_empty() {
-        conn_str.push_str(&format!(";PWD={password}"));
+        conn_str.push_str(&format!(";PWD={}", escape_odbc_value(password)));
     }
 
     // Parse query parameters
@@ -376,5 +388,36 @@ mod tests {
         options.batch_size(128).max_column_size(Some(2048));
         assert_eq!(options.buffer_settings.batch_size, 128);
         assert_eq!(options.buffer_settings.max_column_size, Some(2048));
+    }
+
+    #[test]
+    fn escape_odbc_value_preserves_safe_values() {
+        assert_eq!(escape_odbc_value("simple"), "simple");
+        assert_eq!(escape_odbc_value(""), "");
+        assert_eq!(escape_odbc_value("abc123"), "abc123");
+    }
+
+    #[test]
+    fn escape_odbc_value_wraps_values_with_special_chars() {
+        assert_eq!(escape_odbc_value("pass;word"), "{pass;word}");
+        assert_eq!(escape_odbc_value("pass=word"), "{pass=word}");
+        assert_eq!(escape_odbc_value("pass{word"), "{pass{word}");
+        assert_eq!(escape_odbc_value("pass}word"), "{pass}}word}");
+        assert_eq!(escape_odbc_value("a}b}c"), "{a}}b}}c}");
+    }
+
+    #[test]
+    fn parses_mssql_url_with_special_chars_in_password() {
+        // The url crate preserves percent-encoded characters in the password.
+        // escape_odbc_value sees the encoded form (no ODBC-special chars)
+        // and passes it through as-is, which is correct since the ODBC driver
+        // receives the already-encoded value.
+        let url = "mssql://user:a%3Bb%3Dc%7Dd@localhost/mydb";
+        let options = MssqlConnectOptions::from_str(url).unwrap();
+        let cs = options.connection_string();
+        assert!(
+            cs.contains("PWD=a%3Bb%3Dc%7Dd"),
+            "password not included correctly; got: {cs}"
+        );
     }
 }

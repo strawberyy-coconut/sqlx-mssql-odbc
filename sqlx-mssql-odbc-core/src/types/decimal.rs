@@ -34,12 +34,17 @@ impl<'q> Encode<'q, Mssql> for Decimal {
 impl<'r> Decode<'r, Mssql> for Decimal {
     fn decode(value: MssqlValueRef<'r>) -> Result<Self, BoxDynError> {
         if let Some(text) = value.as_str() {
-            return Ok(Decimal::from_str(text.trim())?);
+            // Normalize locale-dependent decimal separator: ODBC drivers may
+            // render DECIMAL/NUMERIC values using the client locale (',' in
+            // many European locales). rust_decimal only accepts '.'.
+            let normalized = text.trim().replace(',', ".");
+            return Ok(Decimal::from_str(&normalized)?);
         }
 
         if let Some(bytes) = value.as_bytes() {
             let text = std::str::from_utf8(bytes)?;
-            return Ok(Decimal::from_str(text.trim())?);
+            let normalized = text.trim().replace(',', ".");
+            return Ok(Decimal::from_str(&normalized)?);
         }
 
         if let Some(integer) = value.as_i64() {
@@ -105,6 +110,28 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn decimal_decodes_locale_comma_separator() -> Result<(), BoxDynError> {
+        // European locales may use ',' as decimal separator.
+        let value = MssqlValue::new(MssqlValueKind::Text("123,456".to_owned()));
+        let decoded = <Decimal as Decode<Mssql>>::decode(value.as_ref())?;
+        assert_eq!(decoded, Decimal::from_str("123.456")?);
+
+        let value = MssqlValue::new(MssqlValueKind::Text("  987,654  ".to_owned()));
+        let decoded = <Decimal as Decode<Mssql>>::decode(value.as_ref())?;
+        assert_eq!(decoded, Decimal::from_str("987.654")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decimal_decodes_binary_with_locale_comma() -> Result<(), BoxDynError> {
+        let value = MssqlValue::new(MssqlValueKind::Binary(b"-123,456".to_vec()));
+        let decoded = <Decimal as Decode<Mssql>>::decode(value.as_ref())?;
+        assert_eq!(decoded, Decimal::from_str("-123.456")?);
         Ok(())
     }
 

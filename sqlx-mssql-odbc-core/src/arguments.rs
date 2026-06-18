@@ -294,12 +294,15 @@ impl<'q> sqlx_core::encode::Encode<'q, crate::Mssql> for u64 {
         &self,
         buf: &mut Vec<MssqlArgumentValue>,
     ) -> Result<sqlx_core::encode::IsNull, sqlx_core::error::BoxDynError> {
-        if let Ok(value) = i64::try_from(*self) {
-            buf.push(MssqlArgumentValue::Int(value));
-        } else {
-            buf.push(MssqlArgumentValue::UInt(*self));
-        }
-
+        let value = i64::try_from(*self).map_err(|_| {
+            format!(
+                "u64 value {self} exceeds BIGINT range (max {}) and cannot be \
+                 encoded for MSSQL; use NUMERIC/DECIMAL via rust_decimal for \
+                 values above 2^63-1",
+                i64::MAX
+            )
+        })?;
+        buf.push(MssqlArgumentValue::Int(value));
         Ok(sqlx_core::encode::IsNull::No)
     }
 }
@@ -502,7 +505,9 @@ impl<'q> sqlx_core::encode::Encode<'q, crate::Mssql> for odbc_api::sys::Timestam
 
 fn value_to_parameter(value: &MssqlArgumentValue) -> Box<dyn InputParameter> {
     match value {
-        MssqlArgumentValue::Text(value) => Box::new(value.clone().into_parameter()),
+        // Use wide (UTF-16) binding for all text parameters to avoid
+        // codepage-dependent corruption of non-ASCII data in narrow binding.
+        MssqlArgumentValue::Text(value) => Box::new(VarWCharBox::from_str_slice(value)),
         MssqlArgumentValue::Bytes(value) => Box::new(value.clone().into_parameter()),
         MssqlArgumentValue::Int(value) => Box::new(Some(*value).into_parameter()),
         MssqlArgumentValue::UInt(value) => Box::new(
@@ -654,12 +659,27 @@ mod tests {
     }
 
     #[test]
-    fn sqlx_arguments_add_preserves_large_unsigned_values() {
+    fn sqlx_arguments_add_rejects_unsigned_values_exceeding_bigint_range() {
         let mut arguments = MssqlArguments::default();
 
-        sqlx_core::arguments::Arguments::add(&mut arguments, u64::MAX).unwrap();
+        let result = sqlx_core::arguments::Arguments::add(&mut arguments, u64::MAX);
 
-        assert_eq!(arguments.values(), &[MssqlArgumentValue::UInt(u64::MAX)]);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let msg = format!("{error}");
+        assert!(
+            msg.contains("exceeds BIGINT range"),
+            "expected range error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sqlx_arguments_add_encodes_unsigned_values_within_bigint_range() {
+        let mut arguments = MssqlArguments::default();
+
+        sqlx_core::arguments::Arguments::add(&mut arguments, 42_u64).unwrap();
+
+        assert_eq!(arguments.values(), &[MssqlArgumentValue::Int(42)]);
     }
 
     #[test]

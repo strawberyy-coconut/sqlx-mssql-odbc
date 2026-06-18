@@ -10,10 +10,38 @@ use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetad
 use sqlx_core::column::Column;
 use sqlx_core::common::StatementCache;
 use sqlx_core::executor::{Execute, Executor};
+use sqlx_core::sql_str::SqlSafeStr;
 use sqlx_core::transaction::Transaction;
 use sqlx_core::Either;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+
+/// Offloads a blocking operation to Tokio's blocking thread pool when the
+/// `runtime-tokio` feature is enabled. Falls back to direct synchronous
+/// execution on other runtimes.
+///
+/// The closure must satisfy `Send + 'static` so it can be moved across
+/// threads. Callers that need to capture `&mut` references should clone
+/// the relevant `Arc<Mutex<...>>` handles before calling this helper.
+#[cfg(feature = "runtime-tokio")]
+pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
+where
+    F: FnOnce() -> std::result::Result<T, sqlx_core::Error> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| sqlx_core::Error::Protocol(format!("blocking task panicked: {e}")))?
+}
+
+/// Non-Tokio fallback: run the closure synchronously.
+#[cfg(not(feature = "runtime-tokio"))]
+pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
+where
+    F: FnOnce() -> std::result::Result<T, sqlx_core::Error>,
+{
+    f()
+}
 
 type PreparedStatement =
     odbc_api::Prepared<odbc_api::handles::StatementConnection<odbc_api::SharedConnection<'static>>>;
@@ -23,7 +51,7 @@ type ExecuteSender = flume::Sender<ExecuteResult>;
 
 /// Blocking MSSQL ODBC connection wrapper.
 pub struct MssqlConnection {
-    conn: odbc_api::SharedConnection<'static>,
+    pub(crate) conn: odbc_api::SharedConnection<'static>,
     stmt_cache: StatementCache<SharedPreparedStatement>,
     buffer_settings: MssqlBufferSettings,
     transaction_depth: usize,
@@ -98,76 +126,74 @@ impl MssqlConnection {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn begin_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        if self.transaction_depth > 0 {
-            return Err(sqlx_core::Error::InvalidSavePointStatement);
+        if self.transaction_depth == 0 {
+            self.with_conn("begin", |conn| {
+                conn.set_autocommit(false).map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        "failed to disable ODBC autocommit while beginning a transaction",
+                    ))
+                })
+            })?;
+        } else {
+            let savepoint = format!("sqlx_sp_{}", self.transaction_depth);
+            self.with_conn("begin (savepoint)", |conn| {
+                conn.execute(&format!("SAVE TRANSACTION {savepoint}"), (), None)
+                    .map_err(|error| {
+                        sqlx_core::Error::from(crate::error::database_error_with_context(
+                            error,
+                            format!(
+                                "failed to create save point `{savepoint}` for nested transaction"
+                            ),
+                        ))
+                    })?;
+                Ok(())
+            })?;
         }
-
-        self.with_conn("begin", |conn| {
-            conn.set_autocommit(false).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to disable ODBC autocommit while beginning a transaction",
-                ))
-            })
-        })?;
-        self.transaction_depth = 1;
+        self.transaction_depth += 1;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn commit_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
         if self.transaction_depth == 0 {
             return Ok(());
         }
 
-        self.with_conn("commit", |conn| {
-            conn.commit().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to commit the active MSSQL ODBC transaction",
-                ))
+        if self.transaction_depth == 1 {
+            self.with_conn("commit", |conn| {
+                conn.commit().map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        "failed to commit the active MSSQL ODBC transaction",
+                    ))
+                })?;
+                conn.set_autocommit(true).map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        "failed to restore ODBC autocommit after commit",
+                    ))
+                })
             })?;
-            conn.set_autocommit(true).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to restore ODBC autocommit after commit",
-                ))
-            })
-        })?;
-        self.transaction_depth = 0;
+            self.transaction_depth = 0;
+        } else {
+            // Nested commit: save points are implicitly released on outer
+            // COMMIT, so just decrement the depth counter.
+            self.transaction_depth -= 1;
+        }
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn rollback_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
         if self.transaction_depth == 0 {
             return Ok(());
         }
 
-        self.with_conn("rollback", |conn| {
-            conn.rollback().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to roll back the active ODBC transaction",
-                ))
-            })?;
-            conn.set_autocommit(true).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to restore ODBC autocommit after rollback",
-                ))
-            })
-        })?;
-        self.transaction_depth = 0;
-        Ok(())
-    }
-
-    pub(crate) fn start_rollback(&mut self) {
-        if self.transaction_depth == 0 {
-            return;
-        }
-
-        if self
-            .with_conn("start_rollback", |conn| {
+        if self.transaction_depth == 1 {
+            self.with_conn("rollback", |conn| {
                 conn.rollback().map_err(|error| {
                     sqlx_core::Error::from(crate::error::database_error_with_context(
                         error,
@@ -180,10 +206,70 @@ impl MssqlConnection {
                         "failed to restore ODBC autocommit after rollback",
                     ))
                 })
-            })
-            .is_ok()
-        {
+            })?;
             self.transaction_depth = 0;
+        } else {
+            let savepoint = format!("sqlx_sp_{}", self.transaction_depth - 1);
+            self.with_conn("rollback (savepoint)", |conn| {
+                conn.execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None)
+                    .map_err(|error| {
+                        sqlx_core::Error::from(crate::error::database_error_with_context(
+                            error,
+                            format!(
+                                "failed to roll back to save point `{savepoint}`"
+                            ),
+                        ))
+                    })?;
+                Ok(())
+            })?;
+            self.transaction_depth -= 1;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_rollback(&mut self) {
+        if self.transaction_depth == 0 {
+            return;
+        }
+
+        if self.transaction_depth == 1 {
+            if self
+                .with_conn("start_rollback", |conn| {
+                    conn.rollback().map_err(|error| {
+                        sqlx_core::Error::from(crate::error::database_error_with_context(
+                            error,
+                            "failed to roll back the active ODBC transaction",
+                        ))
+                    })?;
+                    conn.set_autocommit(true).map_err(|error| {
+                        sqlx_core::Error::from(crate::error::database_error_with_context(
+                            error,
+                            "failed to restore ODBC autocommit after rollback",
+                        ))
+                    })
+                })
+                .is_ok()
+            {
+                self.transaction_depth = 0;
+            }
+        } else {
+            // Nested rollback in Drop: roll back to save point.
+            let savepoint = format!("sqlx_sp_{}", self.transaction_depth - 1);
+            if self
+                .with_conn("start_rollback (savepoint)", |conn| {
+                    conn.execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None)
+                        .map_err(|error| {
+                            sqlx_core::Error::from(crate::error::database_error_with_context(
+                                error,
+                                format!("failed to roll back to save point `{savepoint}`"),
+                            ))
+                        })?;
+                    Ok(())
+                })
+                .is_ok()
+            {
+                self.transaction_depth -= 1;
+            }
         }
     }
 
@@ -249,6 +335,11 @@ impl MssqlConnection {
         Ok(MssqlStatement::new(sql, columns, usize::from(parameters)))
     }
 
+    /// Set the transaction depth (used by `TransactionManager`).
+    pub(crate) fn set_transaction_depth(&mut self, depth: usize) {
+        self.transaction_depth = depth;
+    }
+
     pub(crate) fn execute_receiver(
         &mut self,
         sql: sqlx_core::sql_str::SqlStr,
@@ -269,6 +360,16 @@ impl MssqlConnection {
         };
         let buffer_settings = self.buffer_settings;
 
+        #[cfg(feature = "runtime-tokio")]
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) =
+                execute_sql_to_channel(maybe_prepared, sql, arguments, buffer_settings, &tx)
+            {
+                let _ = tx.send(Err(error));
+            }
+        });
+
+        #[cfg(not(feature = "runtime-tokio"))]
         std::thread::spawn(move || {
             if let Err(error) =
                 execute_sql_to_channel(maybe_prepared, sql, arguments, buffer_settings, &tx)
@@ -335,7 +436,20 @@ impl sqlx_core::connection::Connection for MssqlConnection {
     }
 
     async fn ping(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        self.ping_blocking()
+        let conn = self.conn.clone();
+        offload_blocking(move || {
+            let conn = conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol("failed to lock connection for ping".into())
+            })?;
+            conn.execute("SELECT 1", (), None).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "MSSQL ping query failed: `SELECT 1`",
+                ))
+            })?;
+            Ok(())
+        })
+        .await
     }
 
     fn begin(
@@ -429,7 +543,39 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
     where
         'c: 'e,
     {
-        Box::pin(async move { self.prepare_blocking(sql) })
+        let conn = self.conn.clone();
+        let sql_owned = sql.as_str().to_owned();
+        Box::pin(async move {
+            offload_blocking(move || {
+                // `into_prepared` takes the SharedConnection clone and produces
+                // a Prepared statement, performing ODBC network I/O internally.
+                let mut prepared = conn.into_prepared(&sql_owned).map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        format!(
+                            "failed to prepare MSSQL ODBC statement: `{}`",
+                            sql_preview(&sql_owned)
+                        ),
+                    ))
+                })?;
+                let parameters = prepared.num_params().map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        format!(
+                            "failed to read ODBC parameter metadata for prepared statement: `{}`",
+                            sql_preview(&sql_owned)
+                        ),
+                    ))
+                })?;
+                let columns = collect_prepared_columns(&mut prepared, parameters)?;
+                Ok(MssqlStatement::new(
+                    sqlx_core::sql_str::AssertSqlSafe(sql_owned).into_sql_str(),
+                    columns,
+                    usize::from(parameters),
+                ))
+            })
+            .await
+        })
     }
 
     #[cfg(feature = "offline")]
@@ -837,12 +983,17 @@ fn map_buffer_desc(data_type: DataType, max_column_size: usize) -> BufferDesc {
                 max_bytes: max_column_size,
             }
         }
+        // Wide character types use SQL_C_WCHAR buffers (UTF-16) to avoid
+        // codepage-dependent corruption of non-ASCII data.
+        DataType::WChar { .. } | DataType::WVarchar { .. } | DataType::WLongVarchar { .. } => {
+            BufferDesc::WText {
+                max_str_len: max_column_size,
+            }
+        }
+        // Narrow character types and fallback types use SQL_C_CHAR.
         DataType::Char { .. }
-        | DataType::WChar { .. }
         | DataType::Varchar { .. }
-        | DataType::WVarchar { .. }
         | DataType::LongVarchar { .. }
-        | DataType::WLongVarchar { .. }
         | DataType::Other { .. }
         | DataType::Unknown
         | DataType::Decimal { .. }
@@ -1209,6 +1360,38 @@ mod tests {
             map_buffer_desc(DataType::Varbinary { length: None }, 16),
             BufferDesc::Binary { max_bytes: 16 }
         );
+    }
+
+    #[test]
+    fn buffered_fetch_maps_wide_char_types_to_wtext() {
+        assert!(matches!(
+            map_buffer_desc(DataType::WChar { length: None }, 64),
+            BufferDesc::WText { max_str_len: 64 }
+        ));
+        assert!(matches!(
+            map_buffer_desc(DataType::WVarchar { length: None }, 128),
+            BufferDesc::WText { max_str_len: 128 }
+        ));
+        assert!(matches!(
+            map_buffer_desc(DataType::WLongVarchar { length: None }, 256),
+            BufferDesc::WText { max_str_len: 256 }
+        ));
+    }
+
+    #[test]
+    fn buffered_fetch_maps_narrow_char_types_to_text() {
+        assert!(matches!(
+            map_buffer_desc(DataType::Char { length: None }, 64),
+            BufferDesc::Text { max_str_len: 64 }
+        ));
+        assert!(matches!(
+            map_buffer_desc(DataType::Varchar { length: None }, 64),
+            BufferDesc::Text { max_str_len: 64 }
+        ));
+        assert!(matches!(
+            map_buffer_desc(DataType::LongVarchar { length: None }, 64),
+            BufferDesc::Text { max_str_len: 64 }
+        ));
     }
 
 }
