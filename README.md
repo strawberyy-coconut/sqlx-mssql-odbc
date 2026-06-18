@@ -128,6 +128,62 @@ let row = sqlx_core::query::query("SELECT 1")
 | `tls-none` | No TLS (default) |
 | `vendored-unix-odbc` | Statically link unixODBC |
 
+## CLI (`sqlx-mssql`)
+
+A thin wrapper around `sqlx-cli` for managing MSSQL databases, running
+migrations, and preparing offline query data.
+
+### Install
+
+```bash
+cargo install --path sqlx-mssql-odbc-cli
+```
+
+After installation, the `sqlx-mssql` binary is available on your `PATH`.
+
+### Usage
+
+All standard `sqlx-cli` subcommands are supported. Provide your database URL
+via `--database-url` or the `DATABASE_URL` environment variable (or a `.env`
+file).
+
+```bash
+# Create / drop the database
+sqlx-mssql database create
+sqlx-mssql database drop
+
+# Create and run migrations
+sqlx-mssql migrate add <name>
+sqlx-mssql migrate run
+
+# Revert the last migration
+sqlx-mssql migrate revert
+
+# List migration status
+sqlx-mssql migrate info
+
+# Prepare offline query data (for compile-time checked queries)
+sqlx-mssql prepare
+```
+
+**Environment variable** (add to `.env` in your project root):
+
+```
+DATABASE_URL=mssql://sa:Password1!@localhost:1433/my_database
+```
+
+Or use the `--database-url` flag:
+
+```bash
+sqlx-mssql migrate run --database-url mssql://sa:Password1!@localhost:1433/my_database
+```
+
+### Run without installing
+
+```bash
+cargo run -p sqlx-mssql-odbc-cli -- migrate run
+```
+
 ## Running Tests
 
 ```bash
