@@ -76,7 +76,7 @@ mod serde_impl {
             impl<'de> Visitor<'de> for MssqlTypeInfoVisitor {
                 type Value = MssqlTypeInfo;
 
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                     formatter.write_str("a MssqlTypeInfo struct")
                 }
 
@@ -372,6 +372,19 @@ impl MssqlTypeInfo {
     pub const fn datetimeoffset() -> Self {
         Self::new(DataType::Other {
             data_type: odbc_api::sys::SqlDataType(-155),
+            column_size: None,
+            decimal_digits: 0,
+        })
+    }
+
+    /// Creates `GEOMETRY`/`GEOGRAPHY` (spatial UDT) type information.
+    ///
+    /// MSSQL reports spatial types as `DataType::Other` with SQL type code -151
+    /// (SQL_SS_UDT — CLR User-Defined Type), which covers both `geometry` and
+    /// `geography` columns.
+    pub const fn geometry() -> Self {
+        Self::new(DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-151),
             column_size: None,
             decimal_digits: 0,
         })

@@ -7,9 +7,11 @@ mod chrono;
 #[cfg(any(feature = "decimal", feature = "rust_decimal"))]
 mod decimal;
 
+#[cfg(feature = "spatial")]
+mod geo;
+
 #[cfg(feature = "json")]
 mod json;
-
 
 #[cfg(feature = "uuid")]
 mod uuid;

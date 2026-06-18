@@ -1,7 +1,6 @@
 use crate::Mssql;
 #[allow(unused_imports)]
 use sqlx_core as sqlx;
-
 sqlx_core::impl_type_checking!(
     Mssql {
         bool,
@@ -13,6 +12,9 @@ sqlx_core::impl_type_checking!(
         f64,
         String,
         Vec<u8>,
+
+        #[cfg(feature = "spatial")]
+        geo_types::Geometry<f64>,
 
         #[cfg(feature = "uuid")]
         sqlx::types::Uuid,
@@ -30,11 +32,8 @@ sqlx_core::impl_type_checking!(
             sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>
                 | sqlx::types::chrono::DateTime<_>,
         },
+        
         time: {
-            sqlx::types::time::OffsetDateTime,
-            sqlx::types::time::PrimitiveDateTime,
-            sqlx::types::time::Date,
-            sqlx::types::time::Time,
         },
     },
     numeric-types: {

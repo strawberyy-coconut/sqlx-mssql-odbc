@@ -1,5 +1,5 @@
 use crate::value::MssqlValueRef;
-use crate::{DataTypeExt, Mssql, MssqlArgumentValue, MssqlTypeInfo};
+use crate::{Mssql, MssqlArgumentValue, MssqlTypeInfo};
 use sqlx_core::decode::Decode;
 use sqlx_core::encode::{Encode, IsNull};
 use sqlx_core::error::BoxDynError;
