@@ -20,7 +20,7 @@ impl Type<Mssql> for Decimal {
                 | DataType::Decimal { .. }
                 | DataType::Double
                 | DataType::Float { .. }
-        ) || ty.data_type().accepts_character_data()
+        )
     }
 }
 

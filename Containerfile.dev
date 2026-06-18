@@ -1,3 +1,17 @@
 FROM docker.io/rust:latest
 
 RUN rustup component add rustfmt
+
+# Install Microsoft ODBC Driver for SQL Server
+RUN curl -sSL -O https://packages.microsoft.com/config/debian/$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2 | cut -d '.' -f 1)/packages-microsoft-prod.deb \
+    && dpkg -i packages-microsoft-prod.deb \
+    && rm packages-microsoft-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
+    && ACCEPT_EULA=Y apt-get install -y mssql-tools18 \
+    && apt-get install -y unixodbc-dev libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="$PATH:/opt/mssql-tools18/bin"
+
+#cargo install --path sqlx-mssql-odbc-cli/

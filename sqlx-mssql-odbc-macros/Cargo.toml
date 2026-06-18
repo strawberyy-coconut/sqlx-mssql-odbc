@@ -12,6 +12,8 @@ macros = ["sqlx-macros-core/macros"]
 offline = ["sqlx-mssql-odbc-core/offline"]
 derive = ["sqlx-macros-core/derive"]
 migrate = ["sqlx-macros-core/migrate"]
+uuid = ["sqlx-mssql-odbc-core/uuid"]
+chrono = ["sqlx-mssql-odbc-core/chrono"]
 
 [dependencies]
 sqlx-macros-core = { version = "=0.9.0", default-features = false }

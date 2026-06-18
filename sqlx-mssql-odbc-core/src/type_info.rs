@@ -193,6 +193,36 @@ mod serde_impl {
                             length: length.and_then(std::num::NonZeroUsize::new),
                         },
                         "UNKNOWN" => DataType::Unknown,
+                        "UNIQUEIDENTIFIER" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-11),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
+                        "SQL_VARIANT" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-150),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
+                        "UDT" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-151),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
+                        "XML" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-152),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
+                        "DATETIMEOFFSET" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-155),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
+                        "HIERARCHYID" => DataType::Other {
+                            data_type: odbc_api::sys::SqlDataType(-156),
+                            column_size: None,
+                            decimal_digits: 0,
+                        },
                         "OTHER" => {
                             let raw_type: i16 = sql_data_type.unwrap_or(0);
                             let raw_type = odbc_api::sys::SqlDataType(raw_type);
@@ -324,6 +354,28 @@ impl MssqlTypeInfo {
             decimal_digits: 0,
         })
     }
+
+    /// Creates `XML` type information.
+    ///
+    /// MSSQL reports this as `DataType::Other` with SQL type code -152 (SQL_SS_XML).
+    pub const fn xml() -> Self {
+        Self::new(DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-152),
+            column_size: None,
+            decimal_digits: 0,
+        })
+    }
+
+    /// Creates `DATETIMEOFFSET` type information.
+    ///
+    /// MSSQL reports this as `DataType::Other` with SQL type code -155 (SQL_SS_TIMESTAMPOFFSET).
+    pub const fn datetimeoffset() -> Self {
+        Self::new(DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-155),
+            column_size: None,
+            decimal_digits: 0,
+        })
+    }
 }
 
 impl sqlx_core::type_info::TypeInfo for MssqlTypeInfo {
@@ -359,6 +411,21 @@ impl sqlx_core::type_info::TypeInfo for MssqlTypeInfo {
             DataType::Other {
                 data_type: sql_type, ..
             } if sql_type.0 == -11 => "UNIQUEIDENTIFIER",
+            DataType::Other {
+                data_type: sql_type, ..
+            } if sql_type.0 == -150 => "SQL_VARIANT",
+            DataType::Other {
+                data_type: sql_type, ..
+            } if sql_type.0 == -151 => "UDT",
+            DataType::Other {
+                data_type: sql_type, ..
+            } if sql_type.0 == -152 => "XML",
+            DataType::Other {
+                data_type: sql_type, ..
+            } if sql_type.0 == -155 => "DATETIMEOFFSET",
+            DataType::Other {
+                data_type: sql_type, ..
+            } if sql_type.0 == -156 => "HIERARCHYID",
             DataType::Other { .. } => "OTHER",
         }
     }
@@ -408,6 +475,12 @@ impl DataTypeExt for DataType {
             DataType::WLongVarchar { .. } => "WLONGVARCHAR",
             DataType::WVarchar { .. } => "WVARCHAR",
             DataType::Unknown => "UNKNOWN",
+            DataType::Other { data_type, .. } if data_type.0 == -11 => "UNIQUEIDENTIFIER",
+            DataType::Other { data_type, .. } if data_type.0 == -150 => "SQL_VARIANT",
+            DataType::Other { data_type, .. } if data_type.0 == -151 => "UDT",
+            DataType::Other { data_type, .. } if data_type.0 == -152 => "XML",
+            DataType::Other { data_type, .. } if data_type.0 == -155 => "DATETIMEOFFSET",
+            DataType::Other { data_type, .. } if data_type.0 == -156 => "HIERARCHYID",
             DataType::Other { .. } => "OTHER",
         }
     }
@@ -450,7 +523,7 @@ impl DataTypeExt for DataType {
         matches!(
             self,
             DataType::Date | DataType::Time { .. } | DataType::Timestamp { .. }
-        )
+        ) || matches!(self, DataType::Other { data_type, .. } if data_type.0 == -155)
     }
 }
 

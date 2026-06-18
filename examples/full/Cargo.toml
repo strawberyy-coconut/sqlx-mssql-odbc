@@ -1,0 +1,21 @@
+[package]
+name = "full"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sqlx-mssql-odbc = { path = "../..", version = "0.0.1", features = [
+    "macros",
+    "derive",
+    "offline",
+    "chrono",
+    "uuid",
+    "vendored-unix-odbc",
+    "migrate",
+    "runtime-tokio",
+] }
+chrono = { version = "0.4.34", default-features = false, features = ["std", "clock"] }
+futures-util = "0.3.32"
+tokio = { version = "1.52.3", features = ["full"] }
+uuid = { version = "1.12.1", features = ["v7"] }
+sqlx = "0.9.0"

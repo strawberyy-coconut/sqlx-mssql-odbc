@@ -11,22 +11,21 @@ categories = ["database"]
 rust-version = "1.96"
 
 [workspace]
-members = ["sqlx-mssql-odbc-cli","sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
+members = ["examples/full","sqlx-mssql-odbc-cli","sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
 
 [features]
 default = []
 # Type/runtime features forwarded to sqlx-mssql-odbc-core
 bigdecimal = ["sqlx-mssql-odbc-core/bigdecimal"]
-chrono = ["sqlx-mssql-odbc-core/chrono"]
+chrono = ["sqlx-mssql-odbc-core/chrono", "sqlx-mssql-odbc-macros/chrono"]
 decimal = ["sqlx-mssql-odbc-core/decimal"]
 json = ["sqlx-mssql-odbc-core/json"]
 migrate = ["sqlx-mssql-odbc-core/migrate"]
 offline = ["sqlx-mssql-odbc-core/offline"]
 runtime-tokio = ["sqlx-mssql-odbc-core/runtime-tokio"]
 rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal"]
-time = ["sqlx-mssql-odbc-core/time"]
 tls-none = ["sqlx-mssql-odbc-core/tls-none"]
-uuid = ["sqlx-mssql-odbc-core/uuid"]
+uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-mssql-odbc-macros/uuid"]
 vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc"]
 # Macro features
 macros = ["sqlx-mssql-odbc-macros"]

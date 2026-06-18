@@ -1,0 +1,22 @@
+{
+  "db_name": "MSSQL",
+  "query": "SELECT COUNT(*) FROM tests",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "",
+        "type_info": {
+          "type_name": "INTEGER"
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "371f81b63b65acde0939e98efb40f994612b949991151a77e437e2dc189a818b"
+}

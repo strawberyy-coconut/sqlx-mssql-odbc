@@ -16,10 +16,9 @@ impl Type<Mssql> for NaiveDate {
     }
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
-        matches!(ty.data_type(), DataType::Date)
-            || ty.data_type().accepts_character_data()
-            || ty.data_type().accepts_numeric_data()
-            || matches!(ty.data_type(), DataType::Other { .. } | DataType::Unknown)
+        matches!(ty.data_type(), DataType::Date) 
+         || ty.data_type().accepts_character_data()
+
     }
 }
 
@@ -30,9 +29,8 @@ impl Type<Mssql> for NaiveTime {
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
         matches!(ty.data_type(), DataType::Time { .. })
-            || ty.data_type().accepts_character_data()
-            || ty.data_type().accepts_numeric_data()
-            || matches!(ty.data_type(), DataType::Other { .. } | DataType::Unknown)
+         || ty.data_type().accepts_character_data()
+
     }
 }
 
@@ -43,41 +41,43 @@ impl Type<Mssql> for NaiveDateTime {
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
         matches!(ty.data_type(), DataType::Timestamp { .. })
-            || ty.data_type().accepts_character_data()
-            || ty.data_type().accepts_numeric_data()
-            || matches!(ty.data_type(), DataType::Other { .. } | DataType::Unknown)
+        || ty.data_type().accepts_character_data()
     }
 }
 
 impl Type<Mssql> for DateTime<Utc> {
     fn type_info() -> MssqlTypeInfo {
-        MssqlTypeInfo::TIMESTAMP
+        MssqlTypeInfo::datetimeoffset()
     }
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
-        <NaiveDateTime as Type<Mssql>>::compatible(ty)
+        matches!(ty.data_type(), DataType::Timestamp { .. })
+        || matches!(ty.data_type(), DataType::Other { data_type, .. } if data_type.0 == -155)
+        || ty.data_type().accepts_character_data()
     }
 }
 
 impl Type<Mssql> for DateTime<FixedOffset> {
     fn type_info() -> MssqlTypeInfo {
-        MssqlTypeInfo::TIMESTAMP
+        MssqlTypeInfo::datetimeoffset()
     }
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
-        <NaiveDateTime as Type<Mssql>>::compatible(ty)
+        matches!(ty.data_type(), DataType::Timestamp { .. })
+        || matches!(ty.data_type(), DataType::Other { data_type, .. } if data_type.0 == -155)
+        || ty.data_type().accepts_character_data()
     }
 }
 
 impl Type<Mssql> for DateTime<Local> {
     fn type_info() -> MssqlTypeInfo {
-        MssqlTypeInfo::TIMESTAMP
+        MssqlTypeInfo::datetimeoffset()
     }
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
         matches!(ty.data_type(), DataType::Timestamp { .. })
-            || ty.data_type().accepts_character_data()
-            || matches!(ty.data_type(), DataType::Other { .. } | DataType::Unknown)
+                  || matches!(ty.data_type(), DataType::Other { data_type, .. } if data_type.0 == -155)
+        || ty.data_type().accepts_character_data()
     }
 }
 
@@ -141,7 +141,7 @@ fn timestamp_from_naive(value: NaiveDateTime) -> odbc_api::sys::Timestamp {
         hour: value.hour() as u16,
         minute: value.minute() as u16,
         second: value.second() as u16,
-        fraction: value.nanosecond(),
+        fraction: (value.nanosecond() / 1000) * 1000,
     }
 }
 
@@ -278,6 +278,23 @@ impl<'r> Decode<'r, Mssql> for NaiveDateTime {
             return Err("ODBC: cannot decode NaiveDateTime".into());
         };
 
+        // Try parsing DATETIMEOFFSET text like "2026-06-18 17:39:55.1234567 +00:00"
+        // by stripping the timezone suffix and parsing the datetime portion.
+        if let Some((datetime_part, _offset)) = text.rsplit_once(' ') {
+            if _offset.starts_with('+') || _offset.starts_with('-') || _offset == "Z" {
+                if let Ok(datetime) =
+                    NaiveDateTime::parse_from_str(datetime_part, "%Y-%m-%d %H:%M:%S%.f")
+                {
+                    return Ok(datetime);
+                }
+                if let Ok(datetime) =
+                    NaiveDateTime::parse_from_str(datetime_part, "%Y-%m-%d %H:%M:%S")
+                {
+                    return Ok(datetime);
+                }
+            }
+        }
+
         if let Ok(datetime) = NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S%.f") {
             return Ok(datetime);
         }
@@ -309,6 +326,18 @@ impl<'r> Decode<'r, Mssql> for DateTime<Utc> {
             return Ok(datetime);
         }
 
+        // Try parsing DATETIMEOFFSET text: "2026-06-18 17:39:55.1234567 +00:00"
+        if let Ok(datetime) =
+            DateTime::<FixedOffset>::parse_from_str(&text, "%Y-%m-%d %H:%M:%S%.f %#z")
+        {
+            return Ok(datetime.to_utc());
+        }
+        if let Ok(datetime) =
+            DateTime::<FixedOffset>::parse_from_str(&text, "%Y-%m-%d %H:%M:%S %#z")
+        {
+            return Ok(datetime.to_utc());
+        }
+
         if let Ok(datetime) = <NaiveDateTime as Decode<Mssql>>::decode(value) {
             return Ok(DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc));
         }
@@ -335,6 +364,18 @@ impl<'r> Decode<'r, Mssql> for DateTime<FixedOffset> {
             return Ok(datetime);
         }
 
+        // Try parsing DATETIMEOFFSET text: "2026-06-18 17:39:55.1234567 +00:00"
+        if let Ok(datetime) =
+            DateTime::<FixedOffset>::parse_from_str(&text, "%Y-%m-%d %H:%M:%S%.f %#z")
+        {
+            return Ok(datetime);
+        }
+        if let Ok(datetime) =
+            DateTime::<FixedOffset>::parse_from_str(&text, "%Y-%m-%d %H:%M:%S %#z")
+        {
+            return Ok(datetime);
+        }
+
         if let Ok(datetime) = <NaiveDateTime as Decode<Mssql>>::decode(value) {
             return Ok(DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc).fixed_offset());
         }
@@ -356,6 +397,28 @@ impl<'r> Decode<'r, Mssql> for DateTime<Local> {
         Ok(<DateTime<Utc> as Decode<Mssql>>::decode(value)?.with_timezone(&Local))
     }
 }
+
+// ---------------------------------------------------------------------------
+// From impls bridging Option<NaiveDateTime> ↔ Option<DateTime<...>>
+//
+// These enable the sqlx query macros (query_as!, query!, query_scalar!) to
+// convert between datetime types when using compile-time checked queries.
+//
+// The macros generate code like:
+//   let val = row.try_get_unchecked::<Option<NaiveDateTime>, _>(i)?.into();
+// which needs From<Option<NaiveDateTime>> for Option<DateTime<Utc>>.
+//
+// In other SQLx drivers (Postgres, MySQL) these aren't needed because
+// NaiveDateTime and DateTime<Utc> map to different SQL types (TIMESTAMP vs
+// TIMESTAMPTZ), so the correct type is selected by return_type_for_id.
+// Here all datetime types share MssqlTypeInfo::TIMESTAMP, so NaiveDateTime
+// is always the "canonical" match and .into() must convert to the user's
+// requested type.
+// ---------------------------------------------------------------------------
+
+
+
+
 
 #[cfg(test)]
 mod tests {
@@ -501,8 +564,12 @@ mod tests {
             "TIMESTAMP"
         );
         assert_eq!(
+            <DateTime<Utc> as Type<Mssql>>::type_info().name(),
+            "DATETIMEOFFSET"
+        );
+        assert_eq!(
             <DateTime<FixedOffset> as Type<Mssql>>::type_info().name(),
-            "TIMESTAMP"
+            "DATETIMEOFFSET"
         );
     }
 }

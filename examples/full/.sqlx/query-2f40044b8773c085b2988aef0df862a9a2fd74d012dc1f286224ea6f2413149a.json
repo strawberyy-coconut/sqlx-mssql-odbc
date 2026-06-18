@@ -1,0 +1,45 @@
+{
+  "db_name": "MSSQL",
+  "query": "SELECT id, test_description, test_date FROM tests WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": {
+          "type_name": "UNIQUEIDENTIFIER",
+          "sql_data_type": -11,
+          "column_size": 36,
+          "decimal_digits": 0
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "test_description",
+        "type_info": {
+          "type_name": "WVARCHAR",
+          "length": null
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "test_date",
+        "type_info": {
+          "type_name": "DATETIMEOFFSET",
+          "sql_data_type": -155,
+          "column_size": 34,
+          "decimal_digits": 7
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2f40044b8773c085b2988aef0df862a9a2fd74d012dc1f286224ea6f2413149a"
+}

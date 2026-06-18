@@ -14,8 +14,8 @@ pub const MSSQL_DRIVER: sqlx_macros_core::query::QueryDriver =
     sqlx_macros_core::query::QueryDriver::new::<Mssql>();
 
 impl sqlx_macros_core::database::DatabaseExt for Mssql {
-    const DATABASE_PATH: &'static str = "sqlx_mssql_odbc_core::Mssql";
-    const ROW_PATH: &'static str = "sqlx_mssql_odbc_core::MssqlRow";
+    const DATABASE_PATH: &'static str = "sqlx_mssql_odbc::Mssql";
+    const ROW_PATH: &'static str = "sqlx_mssql_odbc::MssqlRow";
 
     fn describe_blocking(
         query: &str,

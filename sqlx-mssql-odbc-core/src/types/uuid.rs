@@ -18,8 +18,6 @@ impl Type<Mssql> for Uuid {
     fn compatible(ty: &MssqlTypeInfo) -> bool {
         // UNIQUEIDENTIFIER (SQL_GUID, type code -11)
         matches!(ty.data_type(), odbc_api::DataType::Other { data_type, .. } if data_type.0 == -11)
-            || ty.data_type().accepts_character_data()
-            || ty.data_type().accepts_binary_data()
     }
 }
 

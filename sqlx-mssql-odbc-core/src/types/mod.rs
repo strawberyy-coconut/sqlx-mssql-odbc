@@ -10,8 +10,6 @@ mod decimal;
 #[cfg(feature = "json")]
 mod json;
 
-#[cfg(feature = "time")]
-mod time;
 
 #[cfg(feature = "uuid")]
 mod uuid;

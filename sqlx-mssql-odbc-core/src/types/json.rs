@@ -14,12 +14,6 @@ impl<T: ?Sized> Type<Mssql> for Json<T> {
 
     fn compatible(ty: &MssqlTypeInfo) -> bool {
         ty.data_type().accepts_character_data()
-            || ty.data_type().accepts_numeric_data()
-            || ty.data_type().accepts_binary_data()
-            || matches!(
-                ty.data_type(),
-                odbc_api::DataType::Other { .. } | odbc_api::DataType::Unknown
-            )
     }
 }
 

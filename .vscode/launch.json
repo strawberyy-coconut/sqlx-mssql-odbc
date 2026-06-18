@@ -1,0 +1,93 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Debug executable 'full'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=full",
+                    "--package=full"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'full'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=full",
+                    "--package=full"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sqlx_mssql_odbc'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sqlx-mssql-odbc"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'mssql'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=mssql",
+                    "--package=sqlx-mssql-odbc"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sqlx_mssql_odbc_core'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sqlx-mssql-odbc-core"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'sqlx-mssql'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=sqlx-mssql",
+                    "--package=sqlx-mssql-odbc-cli"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'sqlx-mssql'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=sqlx-mssql",
+                    "--package=sqlx-mssql-odbc-cli"
+                ]
+            }
+        }
+    ]
+}

@@ -1,7 +1,7 @@
 use crate::DataTypeExt;
 use odbc_api::{
-    parameter::{InputParameter, VarBinaryBox, VarCharBox, VarWCharBox, WithDataType},
     IntoParameter, Nullable,
+    parameter::{InputParameter, VarBinaryBox, VarCharBox, VarWCharBox, WithDataType},
 };
 
 /// Values that can currently be bound to MSSQL ODBC parameters.
@@ -176,7 +176,7 @@ macro_rules! impl_integer {
                     $($compatible)|+
                         | odbc_api::DataType::Numeric { .. }
                         | odbc_api::DataType::Decimal { .. }
-                ) || ty.data_type().accepts_character_data()
+                ) || ty.data_type().accepts_numeric_data()
             }
         }
 
@@ -238,7 +238,7 @@ macro_rules! impl_unsigned {
                     $($compatible)|+
                         | odbc_api::DataType::Numeric { .. }
                         | odbc_api::DataType::Decimal { .. }
-                ) || ty.data_type().accepts_character_data()
+                ) || ty.data_type().accepts_numeric_data()
             }
         }
 
@@ -285,7 +285,7 @@ impl sqlx_core::types::Type<crate::Mssql> for u64 {
                 | odbc_api::DataType::BigInt
                 | odbc_api::DataType::Numeric { .. }
                 | odbc_api::DataType::Decimal { .. }
-        ) || ty.data_type().accepts_character_data()
+        ) || ty.data_type().accepts_numeric_data()
     }
 }
 
@@ -313,7 +313,7 @@ impl sqlx_core::types::Type<crate::Mssql> for bool {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_numeric_data() || ty.data_type().accepts_character_data()
+        ty.data_type().accepts_numeric_data()
     }
 }
 
@@ -333,7 +333,7 @@ impl sqlx_core::types::Type<crate::Mssql> for f32 {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_numeric_data() || ty.data_type().accepts_character_data()
+        ty.data_type().accepts_numeric_data()
     }
 }
 
@@ -353,7 +353,7 @@ impl sqlx_core::types::Type<crate::Mssql> for f64 {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_numeric_data() || ty.data_type().accepts_character_data()
+        ty.data_type().accepts_numeric_data()
     }
 }
 
@@ -373,13 +373,26 @@ impl sqlx_core::types::Type<crate::Mssql> for str {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_character_data()
+        if ty.data_type().accepts_character_data() {
+            return true;
+        }
+        // MSSQL-specific types reported as DataType::Other that the driver
+        // fetches as text — we can decode them as String.
+        matches!(
+            ty.data_type(),
+            odbc_api::DataType::Other { data_type, .. }
+                if matches!(data_type.0, -150 | -151 | -152 | -156)
+        )
     }
 }
 
 impl sqlx_core::types::Type<crate::Mssql> for String {
     fn type_info() -> crate::MssqlTypeInfo {
         <str as sqlx_core::types::Type<crate::Mssql>>::type_info()
+    }
+
+    fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
+        <str as sqlx_core::types::Type<crate::Mssql>>::compatible(ty)
     }
 }
 
@@ -409,7 +422,7 @@ impl sqlx_core::types::Type<crate::Mssql> for [u8] {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_binary_data() || ty.data_type().accepts_character_data()
+        ty.data_type().accepts_binary_data()
     }
 }
 
@@ -581,8 +594,8 @@ fn null_parameter(data_type: odbc_api::DataType) -> Box<dyn InputParameter> {
 mod tests {
     use super::*;
     use odbc_api::{
-        handles::{CData, HasDataType},
         ParameterCollectionRef,
+        handles::{CData, HasDataType},
     };
 
     #[test]
@@ -750,7 +763,10 @@ mod tests {
         assert_eq!(sqlx_core::arguments::Arguments::len(&arguments), 2);
         assert_eq!(
             arguments.values(),
-            &[MssqlArgumentValue::Bit(true), MssqlArgumentValue::Float(1.5)]
+            &[
+                MssqlArgumentValue::Bit(true),
+                MssqlArgumentValue::Float(1.5)
+            ]
         );
     }
 

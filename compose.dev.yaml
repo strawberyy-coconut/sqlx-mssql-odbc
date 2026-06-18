@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Containerfile.dev
+    env_file:
+      - .dev.env
     depends_on:
       - db
     environment:
