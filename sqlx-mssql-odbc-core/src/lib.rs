@@ -8,7 +8,7 @@
 //! ```no_run
 //! use sqlx_core::connection::Connection;
 //! use sqlx_core::row::Row;
-//! use sqlx_mssql_odbc::MssqlConnection;
+//! use sqlx_mssql_odbc_core::MssqlConnection;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //! let mut conn = MssqlConnection::connect("mssql://sa:Password1!@localhost:1433/testdb").await?;

@@ -92,6 +92,10 @@ brew install msodbcsql18
 
 The ODBC driver manager is built into Windows. Install the [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
 
+> **Platform note:** CI currently verifies Linux only. macOS and Windows are
+> expected to work but are not exercised by automated tests. Community PRs for
+> platform-specific fixes are welcome.
+
 ## Connection Pooling
 
 ```rust

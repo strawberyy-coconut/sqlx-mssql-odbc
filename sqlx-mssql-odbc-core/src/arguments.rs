@@ -11,10 +11,10 @@ pub enum MssqlArgumentValue {
     Text(String),
     /// Binary parameter.
     Bytes(Vec<u8>),
-    /// Signed integer parameter.
+    /// Signed integer parameter (all integer types including u8/u16/u32/u64
+    /// that fit within `i64` range are encoded here; unsigned values above
+    /// `i64::MAX` are rejected at encode time).
     Int(i64),
-    /// Unsigned integer parameter.
-    UInt(u64),
     /// Boolean parameter.
     Bit(bool),
     /// Floating point parameter.
@@ -510,9 +510,6 @@ fn value_to_parameter(value: &MssqlArgumentValue) -> Box<dyn InputParameter> {
         MssqlArgumentValue::Text(value) => Box::new(VarWCharBox::from_str_slice(value)),
         MssqlArgumentValue::Bytes(value) => Box::new(value.clone().into_parameter()),
         MssqlArgumentValue::Int(value) => Box::new(Some(*value).into_parameter()),
-        MssqlArgumentValue::UInt(value) => Box::new(
-            WithDataType::new(Nullable::new(*value), odbc_api::DataType::BigInt).into_parameter(),
-        ),
         MssqlArgumentValue::Bit(value) => Box::new(odbc_api::Bit::from_bool(*value)),
         MssqlArgumentValue::Float(value) => Box::new(Some(*value).into_parameter()),
         MssqlArgumentValue::Date(value) => Box::new(Nullable::new(*value).into_parameter()),
@@ -543,6 +540,9 @@ fn null_parameter(data_type: odbc_api::DataType) -> Box<dyn InputParameter> {
         odbc_api::DataType::Bit => Box::new(Nullable::<odbc_api::Bit>::null()),
         odbc_api::DataType::Real => Box::new(Nullable::<f32>::null()),
         odbc_api::DataType::Double => Box::new(Nullable::<f64>::null()),
+        // For typed NULLs the ODBC driver only inspects the indicator
+        // (SQL_NULL_DATA), not the value buffer, so the f64 buffer width
+        // is harmless even when the underlying column is REAL (f32).
         odbc_api::DataType::Float { .. } => {
             Box::new(WithDataType::new(Nullable::<f64>::null(), data_type))
         }
@@ -760,7 +760,7 @@ mod tests {
             MssqlArgumentValue::Text("abc".to_owned()),
             MssqlArgumentValue::Bytes(vec![1, 2, 3]),
             MssqlArgumentValue::Int(7),
-            MssqlArgumentValue::UInt(8),
+            MssqlArgumentValue::Int(8),
             MssqlArgumentValue::Bit(true),
             MssqlArgumentValue::Float(1.5),
         ];
