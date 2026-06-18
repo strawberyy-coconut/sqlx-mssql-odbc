@@ -277,6 +277,62 @@ impl MssqlConnection {
         self.transaction_depth
     }
 
+    /// Executes a SQL statement directly with no parameters and discards any
+    /// result set. Returns an error if the execution fails.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn exec_sql_blocking(&self, sql: &str) -> std::result::Result<(), sqlx_core::Error> {
+        self.with_conn("exec_migration_sql", |conn| {
+            conn.execute(sql, (), None).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("failed to execute migration SQL: `{}`", sql_preview(sql)),
+                ))
+            })?;
+            Ok(())
+        })
+    }
+
+    /// Executes a SQL query and returns the first column of the first row as
+    /// an `i64`. Returns `None` if the result set is empty.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn scalar_i64_blocking(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<Option<i64>, sqlx_core::Error> {
+        self.with_conn("scalar_query", |conn| {
+            let mut cursor = conn.execute(sql, (), None).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("scalar query failed: `{}`", sql_preview(sql)),
+                ))
+            })?
+            .ok_or_else(|| {
+                sqlx_core::Error::Protocol(format!(
+                    "scalar query returned no result set: `{}`",
+                    sql_preview(sql),
+                ))
+            })?;
+
+            if let Some(mut row) = cursor.next_row().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "scalar query next row",
+                ))
+            })? {
+                let mut value: Nullable<i64> = Nullable::null();
+                row.get_data(1, &mut value).map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        "scalar query column 1",
+                    ))
+                })?;
+                Ok(value.into_opt())
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
     /// Prepares a statement and returns the metadata reported by the ODBC driver.
     pub fn prepare_blocking(
         &mut self,

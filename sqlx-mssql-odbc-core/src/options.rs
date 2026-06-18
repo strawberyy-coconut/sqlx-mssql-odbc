@@ -122,6 +122,32 @@ impl MssqlConnectOptions {
     pub fn connect_blocking(&self) -> Result<MssqlConnection> {
         MssqlConnection::connect_blocking(self)
     }
+
+    /// Returns a copy of these options with the database name replaced.
+    ///
+    /// The connection string is searched case-insensitively for a `Database=` key;
+    /// if found it is replaced, otherwise the new database is appended.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn with_database(&self, database: &str) -> Self {
+        let mut new = self.clone();
+        let escaped = escape_odbc_value(database);
+        let upper = new.conn_str.to_uppercase();
+        let search = "DATABASE=";
+
+        if let Some(pos) = upper.find(search) {
+            let start = pos;
+            let end = new.conn_str[start..]
+                .find(';')
+                .map(|i| start + i)
+                .unwrap_or(new.conn_str.len());
+            let before = new.conn_str[..start].to_owned();
+            let after = new.conn_str[end..].to_owned();
+            new.conn_str = format!("{before}Database={escaped}{after}");
+        } else {
+            new.conn_str.push_str(&format!(";Database={escaped}"));
+        }
+        new
+    }
 }
 
 impl Debug for MssqlConnectOptions {

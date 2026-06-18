@@ -67,6 +67,9 @@ mod describe;
 #[cfg(feature = "offline")]
 pub use describe::{describe_blocking, MSSQL_DRIVER};
 
+#[cfg(feature = "migrate")]
+mod migrate;
+
 pub use arguments::{MssqlArgumentValue, MssqlArguments, MssqlParameterCollection};
 pub use column::MssqlColumn;
 pub use connection::MssqlConnection;
