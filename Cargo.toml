@@ -1,0 +1,41 @@
+[package]
+name = "sqlx-mssql-odbc"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
+description = "MSSQL driver for SQLx via ODBC."
+readme = "README.md"
+keywords = ["sqlx", "mssql", "sql-server", "odbc", "database"]
+categories = ["database"]
+rust-version = "1.96"
+
+[workspace]
+members = ["sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
+
+[features]
+default = []
+# Type/runtime features forwarded to sqlx-mssql-odbc-core
+bigdecimal = ["sqlx-mssql-odbc-core/bigdecimal"]
+chrono = ["sqlx-mssql-odbc-core/chrono"]
+decimal = ["sqlx-mssql-odbc-core/decimal"]
+json = ["sqlx-mssql-odbc-core/json"]
+offline = ["sqlx-mssql-odbc-core/offline"]
+runtime-tokio = ["sqlx-mssql-odbc-core/runtime-tokio"]
+rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal"]
+time = ["sqlx-mssql-odbc-core/time"]
+tls-none = ["sqlx-mssql-odbc-core/tls-none"]
+uuid = ["sqlx-mssql-odbc-core/uuid"]
+vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc"]
+# Macro features
+macros = ["sqlx-mssql-odbc-macros"]
+derive = ["sqlx-mssql-odbc-macros/derive"]
+
+[dependencies]
+sqlx-core = { version = "=0.9.0" }
+sqlx-mssql-odbc-core = { version = "0.0.1", path = "./sqlx-mssql-odbc-core", default-features = false }
+sqlx-mssql-odbc-macros = { version = "0.0.1", path = "./sqlx-mssql-odbc-macros", optional = true }
+
+[dev-dependencies]
+futures-util = "0.3.32"
+tokio = { version = "1.25.0", features = ["macros", "rt", "rt-multi-thread"] }
