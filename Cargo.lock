@@ -2566,6 +2566,7 @@ dependencies = [
  "flume",
  "futures-core",
  "futures-util",
+ "geo-traits",
  "geo-types",
  "log",
  "odbc-api",
