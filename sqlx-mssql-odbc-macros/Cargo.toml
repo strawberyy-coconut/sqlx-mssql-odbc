@@ -2,6 +2,13 @@
 name = "sqlx-mssql-odbc-macros"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
+description = "Proc macro support for sqlx-mssql-odbc."
+readme = "../README.md"
+keywords = ["sqlx", "mssql", "sql-server", "odbc", "database"]
+categories = ["database"]
+rust-version = "1.96"
 
 [lib]
 proc-macro = true

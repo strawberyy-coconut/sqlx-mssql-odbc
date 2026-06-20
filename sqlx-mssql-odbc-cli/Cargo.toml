@@ -2,6 +2,13 @@
 name = "sqlx-mssql-odbc-cli"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
+description = "CLI tools for sqlx-mssql-odbc."
+readme = "../README.md"
+keywords = ["sqlx", "mssql", "sql-server", "odbc", "database", "cli"]
+categories = ["database", "command-line-utilities"]
+rust-version = "1.96"
 
 [[bin]]
 name = "cargo-sqlx-mssql"
