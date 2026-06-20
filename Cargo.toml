@@ -33,7 +33,7 @@ rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal", "sqlx-mssql-odbc-macros/rus
 tls-none = ["sqlx-mssql-odbc-core/tls-none"]
 uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-mssql-odbc-macros/uuid"]
 spatial = ["sqlx-mssql-odbc-core/spatial"]
-vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc"]
+vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc", "sqlx-mssql-odbc-macros/vendored-unix-odbc"]
 # Macro features
 macros = ["sqlx-mssql-odbc-macros"]
 derive = ["sqlx-mssql-odbc-macros/derive"]

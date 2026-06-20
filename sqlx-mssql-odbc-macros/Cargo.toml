@@ -30,6 +30,7 @@ json = ["sqlx-mssql-odbc-core/json", "sqlx-macros-core/json"]
 rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal", "sqlx-macros-core/rust_decimal"]
 time = ["sqlx-mssql-odbc-core/time", "sqlx-macros-core/time"]
 uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-macros-core/uuid"]
+vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc"]
 
 [dependencies]
 sqlx-macros-core = { version = "=0.9.0", default-features = false }
