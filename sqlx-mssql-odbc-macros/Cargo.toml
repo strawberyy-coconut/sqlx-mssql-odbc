@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-mssql-odbc-macros"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
@@ -9,6 +9,11 @@ readme = "../README.md"
 keywords = ["sqlx", "mssql", "sql-server", "odbc", "database"]
 categories = ["database"]
 rust-version = "1.96"
+documentation = "https://docs.rs/sqlx-mssql-odbc"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
 proc-macro = true
@@ -28,7 +33,7 @@ uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-macros-core/uuid"]
 
 [dependencies]
 sqlx-macros-core = { version = "=0.9.0", default-features = false }
-sqlx-mssql-odbc-core = { version = "0.1.0", path = "../sqlx-mssql-odbc-core", features = ["offline"] }
+sqlx-mssql-odbc-core = { version = "0.1.1", path = "../sqlx-mssql-odbc-core", features = ["offline"] }
 proc-macro2 = "1.0.76"
 syn = { version = "2.0.58", features = ["full"] }
 quote = "1.0.35"

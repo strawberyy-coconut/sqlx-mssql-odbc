@@ -44,6 +44,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![warn(future_incompatible, rust_2018_idioms)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod arguments;
 mod column;
@@ -62,6 +63,7 @@ mod types;
 mod value;
 
 #[cfg(feature = "any")]
+#[cfg_attr(docsrs, doc(cfg(feature = "any")))]
 #[doc(hidden)]
 pub mod any;
 
@@ -69,9 +71,11 @@ pub mod any;
 mod describe;
 
 #[cfg(feature = "offline")]
+#[cfg_attr(docsrs, doc(cfg(feature = "offline")))]
 pub use describe::{describe_blocking, MSSQL_DRIVER};
 
 #[cfg(feature = "migrate")]
+#[cfg_attr(docsrs, doc(cfg(feature = "migrate")))]
 mod migrate;
 
 pub use arguments::{MssqlArgumentValue, MssqlArguments, MssqlParameterCollection};

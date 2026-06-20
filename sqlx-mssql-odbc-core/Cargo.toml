@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-mssql-odbc-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
@@ -9,6 +9,11 @@ readme = "../README.md"
 keywords = ["sqlx", "mssql", "sql-server", "odbc", "database"]
 categories = ["database"]
 rust-version = "1.96"
+documentation = "https://docs.rs/sqlx-mssql-odbc"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 
 [features]
