@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sqlx-mssql-odbc = { path = "../..", version = "0.0.1", features = [
+sqlx-mssql-odbc = { path = "../..", version = "0.1.0", features = [
     "macros",
     "derive",
     "offline",
