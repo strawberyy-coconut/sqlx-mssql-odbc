@@ -792,8 +792,10 @@ impl MssqlConnection {
             buffer_settings: options.buffer_settings,
         };
 
-        // Spawn the actor on Tokio's blocking thread pool.
-        tokio::task::spawn_blocking(move || actor.run(cmd_rx));
+        // Spawn the actor on a dedicated OS thread so this function can be
+        // called from contexts where no Tokio runtime exists (for example,
+        // compile-time query checking in proc macros).
+        std::thread::spawn(move || actor.run(cmd_rx));
 
         Ok(Self {
             cmd_tx,
