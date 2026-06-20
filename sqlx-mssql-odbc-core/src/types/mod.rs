@@ -4,6 +4,9 @@ mod bigdecimal;
 #[cfg(feature = "chrono")]
 mod chrono;
 
+#[cfg(feature = "time")]
+mod time;
+
 #[cfg(any(feature = "decimal", feature = "rust_decimal"))]
 mod decimal;
 

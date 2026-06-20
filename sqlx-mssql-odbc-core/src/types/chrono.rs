@@ -543,7 +543,7 @@ mod tests {
                 hour: 15,
                 minute: 30,
                 second: 45,
-                fraction: 123_456_789
+                fraction: 123_456_000
             })]
         );
 

@@ -16,6 +16,7 @@ default = []
 any = ["sqlx-core/any"]
 bigdecimal = ["dep:bigdecimal", "sqlx-core/bigdecimal"]
 chrono = ["dep:chrono", "sqlx-core/chrono"]
+time = ["dep:time", "sqlx-core/time"]
 decimal = ["rust_decimal"]
 json = ["dep:serde", "dep:serde_json", "sqlx-core/json"]
 migrate = ["sqlx-core/migrate"]
@@ -30,6 +31,7 @@ vendored-unix-odbc = ["odbc-api/vendored-unix-odbc"]
 [dependencies]
 bigdecimal = { version = "0.4.0", optional = true }
 chrono = { version = "0.4.34", default-features = false, features = ["std", "clock"], optional = true }
+time = { version = "0.3", optional = true }
 geo-types = { version = "0.7", optional = true }
 futures-core = { version = "0.3.32", default-features = false }
 futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }

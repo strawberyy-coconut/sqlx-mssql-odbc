@@ -34,6 +34,10 @@ sqlx_core::impl_type_checking!(
         },
         
         time: {
+            sqlx::types::time::Date,
+            sqlx::types::time::Time,
+            sqlx::types::time::PrimitiveDateTime,
+            sqlx::types::time::OffsetDateTime,
         },
     },
     numeric-types: {

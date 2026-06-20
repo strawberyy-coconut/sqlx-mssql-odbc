@@ -18,6 +18,7 @@ default = []
 # Type/runtime features forwarded to sqlx-mssql-odbc-core
 bigdecimal = ["sqlx-mssql-odbc-core/bigdecimal", "sqlx-mssql-odbc-macros/bigdecimal"]
 chrono = ["sqlx-mssql-odbc-core/chrono", "sqlx-mssql-odbc-macros/chrono"]
+time = ["sqlx-mssql-odbc-core/time", "sqlx-mssql-odbc-macros/time"]
 decimal = ["sqlx-mssql-odbc-core/decimal"]
 json = ["sqlx-mssql-odbc-core/json", "sqlx-mssql-odbc-macros/json"]
 migrate = ["sqlx-mssql-odbc-core/migrate"]

@@ -23,7 +23,7 @@ bigdecimal = ["sqlx-mssql-odbc-core/bigdecimal", "sqlx-macros-core/bigdecimal"]
 chrono = ["sqlx-mssql-odbc-core/chrono", "sqlx-macros-core/chrono"]
 json = ["sqlx-mssql-odbc-core/json", "sqlx-macros-core/json"]
 rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal", "sqlx-macros-core/rust_decimal"]
-time = ["sqlx-macros-core/time"]
+time = ["sqlx-mssql-odbc-core/time", "sqlx-macros-core/time"]
 uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-macros-core/uuid"]
 
 [dependencies]
