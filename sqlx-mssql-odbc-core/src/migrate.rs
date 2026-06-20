@@ -4,10 +4,8 @@
 //! [`Migrate`] for [`MssqlConnection`] (migration execution and tracking)
 //! so that [`Migrator`](sqlx_core::migrate::Migrator) works with this driver.
 
-use crate::connection::offload_blocking;
 use crate::{Mssql, MssqlConnection, MssqlConnectOptions};
 use futures_core::future::BoxFuture;
-use odbc_api::{Cursor, Nullable};
 use sqlx_core::error::Error;
 use sqlx_core::migrate::{AppliedMigration, Migrate, MigrateDatabase, MigrateError, Migration};
 use std::str::FromStr;
@@ -222,16 +220,21 @@ impl Migrate for MssqlConnection {
         &'e mut self,
         table_name: &'e str,
     ) -> BoxFuture<'e, Result<Vec<AppliedMigration>, MigrateError>> {
-        let conn = self.conn.clone();
         let quoted = quoted_table_name(table_name);
         let sql = format!(
             "SELECT version, checksum FROM {quoted} ORDER BY version",
         );
 
         Box::pin(async move {
-            list_applied_migrations_inner(conn, sql)
-                .await
-                .map_err(MigrateError::Execute)
+            let rows = self.list_migrations_blocking(&sql)?;
+            let migrations = rows
+                .into_iter()
+                .map(|(version, checksum)| AppliedMigration {
+                    version,
+                    checksum: checksum.into(),
+                })
+                .collect();
+            Ok(migrations)
         })
     }
 
@@ -269,7 +272,6 @@ impl Migrate for MssqlConnection {
         _table_name: &'e str,
         migration: &'e Migration,
     ) -> BoxFuture<'e, Result<Duration, MigrateError>> {
-        let conn = self.conn.clone();
         let quoted = quoted_table_name(_table_name);
         let sql = migration.sql.as_str().to_owned();
         let version = migration.version;
@@ -278,9 +280,22 @@ impl Migrate for MssqlConnection {
         let checksum = migration.checksum.to_vec();
         let no_tx = migration.no_tx;
 
+        let insert_sql = format!(
+            "INSERT INTO {quoted} \
+             (version, description, migration_type, sql, checksum, no_tx) \
+             VALUES ({version}, N'{desc}', N'{mt}', N'{sql_text}', {chk}, {ntx})",
+            quoted = quoted,
+            version = version,
+            desc = escape_sql_string(&description),
+            mt = escape_sql_string(&migration_type),
+            sql_text = escape_sql_string(migration.sql.as_str()),
+            chk = format_hex(&checksum),
+            ntx = if no_tx { 1 } else { 0 },
+        );
+
         Box::pin(async move {
-            apply_migration_inner(conn, quoted, sql, version, description, migration_type, checksum, no_tx)
-                .await
+            self.apply_migration_blocking(&sql, &insert_sql, version, no_tx)
+                .map_err(|e| MigrateError::ExecuteMigration(e, version))
         })
     }
 
@@ -291,15 +306,20 @@ impl Migrate for MssqlConnection {
         _table_name: &'e str,
         migration: &'e Migration,
     ) -> BoxFuture<'e, Result<Duration, MigrateError>> {
-        let conn = self.conn.clone();
         let quoted = quoted_table_name(_table_name);
         let sql = migration.sql.as_str().to_owned();
         let version = migration.version;
         let no_tx = migration.no_tx;
 
+        let delete_sql = format!(
+            "DELETE FROM {quoted} WHERE version = {version}",
+            quoted = quoted,
+            version = version,
+        );
+
         Box::pin(async move {
-            revert_migration_inner(conn, quoted, sql, version, no_tx)
-                .await
+            self.revert_migration_blocking(&sql, &delete_sql, version, no_tx)
+                .map_err(|e| MigrateError::ExecuteMigration(e, version))
         })
     }
 
@@ -332,226 +352,4 @@ impl Migrate for MssqlConnection {
                 .map_err(|e| MigrateError::ExecuteMigration(e, version))
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Async helper functions (offloaded to blocking thread pool)
-// ---------------------------------------------------------------------------
-
-/// Locks the shared connection and executes a query against the `Connection`.
-macro_rules! with_shared_conn {
-    ($conn:expr, |$guard:ident| $body:expr) => {{
-        let mut $guard = $conn.lock().map_err(|_| {
-            sqlx_core::Error::Protocol(
-                "failed to lock the shared ODBC connection".into(),
-            )
-        })?;
-        // Reborrow as a mutable Connection reference (SharedConnection
-        // supports DerefMut to Connection).
-        let $guard: &mut odbc_api::Connection<'static> = &mut $guard;
-        $body
-    }};
-}
-
-/// Queries the migrations tracking table and returns the list of applied
-/// migrations.
-async fn list_applied_migrations_inner(
-    conn: odbc_api::SharedConnection<'static>,
-    sql: String,
-) -> std::result::Result<Vec<AppliedMigration>, sqlx_core::Error> {
-    offload_blocking(move || {
-        with_shared_conn!(conn, |guard| {
-            let mut cursor = guard.execute(&sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to query applied migrations",
-                ))
-            })?
-            .ok_or_else(|| {
-                sqlx_core::Error::Protocol(
-                    "list_applied_migrations returned no result set".into(),
-                )
-            })?;
-
-            let mut migrations = Vec::new();
-            while let Some(mut row) = cursor.next_row().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to read applied migration row",
-                ))
-            })? {
-                let mut version: Nullable<i64> = Nullable::null();
-                row.get_data(1, &mut version).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to read migration version",
-                    ))
-                })?;
-
-                let mut checksum_bytes = Vec::new();
-                let has_value = row.get_binary(2, &mut checksum_bytes).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to read migration checksum",
-                    ))
-                })?;
-
-                if let Some(version) = version.into_opt() {
-                    migrations.push(AppliedMigration {
-                        version,
-                        checksum: if has_value {
-                            checksum_bytes.into()
-                        } else {
-                            vec![].into()
-                        },
-                    });
-                }
-            }
-
-            Ok(migrations)
-        })
-    })
-    .await
-}
-
-/// Executes a migration's SQL inside a DDL transaction, then inserts a
-/// tracking record. Returns the elapsed wall-clock time.
-async fn apply_migration_inner(
-    conn: odbc_api::SharedConnection<'static>,
-    quoted: String,
-    sql: String,
-    version: i64,
-    description: String,
-    migration_type: String,
-    checksum: Vec<u8>,
-    no_tx: bool,
-) -> std::result::Result<Duration, MigrateError> {
-    let start = std::time::Instant::now();
-
-    offload_blocking(move || {
-        with_shared_conn!(conn, |guard| {
-            // Start a transaction unless the migration opts out.
-            if !no_tx {
-                guard.set_autocommit(false).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to start transaction for migration apply",
-                    ))
-                })?;
-            }
-
-            // Execute the migration SQL.
-            guard.execute(&sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!("migration {version} failed"),
-                ))
-            })?;
-
-            // Insert the tracking record.
-            let insert_sql = format!(
-                "INSERT INTO {quoted} \
-                 (version, description, migration_type, sql, checksum, no_tx) \
-                 VALUES ({version}, N'{desc}', N'{mt}', N'{sql_text}', {chk}, {ntx})",
-                quoted = quoted,
-                version = version,
-                desc = escape_sql_string(&description),
-                mt = escape_sql_string(&migration_type),
-                sql_text = escape_sql_string(&sql),
-                chk = format_hex(&checksum),
-                ntx = if no_tx { 1 } else { 0 },
-            );
-            guard.execute(&insert_sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!("failed to insert tracking record for migration {version}"),
-                ))
-            })?;
-
-            // Commit the transaction.
-            if !no_tx {
-                guard.commit().map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        format!("failed to commit migration {version}"),
-                    ))
-                })?;
-                guard.set_autocommit(true).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to restore autocommit after migration apply",
-                    ))
-                })?;
-            }
-
-            Ok(start.elapsed())
-        })
-    })
-    .await
-    .map_err(|e| MigrateError::ExecuteMigration(e, version))
-}
-
-/// Executes a revert (down) migration's SQL inside a DDL transaction, then
-/// removes the tracking record. Returns the elapsed wall-clock time.
-async fn revert_migration_inner(
-    conn: odbc_api::SharedConnection<'static>,
-    quoted: String,
-    sql: String,
-    version: i64,
-    no_tx: bool,
-) -> std::result::Result<Duration, MigrateError> {
-    let start = std::time::Instant::now();
-
-    offload_blocking(move || {
-        with_shared_conn!(conn, |guard| {
-            if !no_tx {
-                guard.set_autocommit(false).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to start transaction for migration revert",
-                    ))
-                })?;
-            }
-
-            // Execute the revert SQL.
-            guard.execute(&sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!("revert migration {version} failed"),
-                ))
-            })?;
-
-            // Remove the tracking record.
-            let delete_sql = format!(
-                "DELETE FROM {quoted} WHERE version = {version}",
-                quoted = quoted,
-                version = version,
-            );
-            guard.execute(&delete_sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!("failed to delete tracking record for migration {version}"),
-                ))
-            })?;
-
-            if !no_tx {
-                guard.commit().map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        format!("failed to commit revert migration {version}"),
-                    ))
-                })?;
-                guard.set_autocommit(true).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to restore autocommit after migration revert",
-                    ))
-                })?;
-            }
-
-            Ok(start.elapsed())
-        })
-    })
-    .await
-    .map_err(|e| MigrateError::ExecuteMigration(e, version))
 }

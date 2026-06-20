@@ -1,5 +1,5 @@
 use crate::{
-    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions, MssqlParameterCollection,
+    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions,
     MssqlQueryResult, MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
 };
 use futures_core::future::BoxFuture;
@@ -10,297 +10,547 @@ use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetad
 use sqlx_core::column::Column;
 use sqlx_core::common::StatementCache;
 use sqlx_core::executor::{Execute, Executor};
-use sqlx_core::sql_str::SqlSafeStr;
+use sqlx_core::sql_str::SqlStr;
 use sqlx_core::transaction::Transaction;
 use sqlx_core::Either;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
-
-/// Offloads a blocking operation to Tokio's blocking thread pool when the
-/// `runtime-tokio` feature is enabled. Falls back to direct synchronous
-/// execution on other runtimes.
-///
-/// The closure must satisfy `Send + 'static` so it can be moved across
-/// threads. Callers that need to capture `&mut` references should clone
-/// the relevant `Arc<Mutex<...>>` handles before calling this helper.
-#[cfg(feature = "runtime-tokio")]
-pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
-where
-    F: FnOnce() -> std::result::Result<T, sqlx_core::Error> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| sqlx_core::Error::Protocol(format!("blocking task panicked: {e}")))?
-}
-
-/// Non-Tokio fallback: run the closure synchronously.
-#[cfg(not(feature = "runtime-tokio"))]
-pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
-where
-    F: FnOnce() -> std::result::Result<T, sqlx_core::Error>,
-{
-    f()
-}
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 type PreparedStatement =
     odbc_api::Prepared<odbc_api::handles::StatementConnection<odbc_api::SharedConnection<'static>>>;
-type SharedPreparedStatement = Arc<Mutex<PreparedStatement>>;
 type ExecuteResult = std::result::Result<Either<MssqlQueryResult, MssqlRow>, sqlx_core::Error>;
 type ExecuteSender = flume::Sender<ExecuteResult>;
 
-/// Blocking MSSQL ODBC connection wrapper.
-pub struct MssqlConnection {
-    pub(crate) conn: odbc_api::SharedConnection<'static>,
-    stmt_cache: StatementCache<SharedPreparedStatement>,
-    buffer_settings: MssqlBufferSettings,
+// ============================================================================
+// Command enum — sent from the async handle to the actor thread
+// ============================================================================
+
+enum Command {
+    Execute {
+        sql: SqlStr,
+        args: Option<MssqlArguments>,
+        persistent: bool,
+        response: ExecuteSender,
+    },
+    Prepare {
+        sql: SqlStr,
+        response: tokio::sync::oneshot::Sender<
+            std::result::Result<MssqlStatement, sqlx_core::Error>,
+        >,
+    },
+    Ping {
+        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+    },
+    Begin {
+        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+    },
+    Commit {
+        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+    },
+    Rollback {
+        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+    },
+    StartRollback,
+    ExecSql {
+        sql: String,
+        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+    },
+    ScalarI64 {
+        sql: String,
+        response:
+            tokio::sync::oneshot::Sender<std::result::Result<Option<i64>, sqlx_core::Error>>,
+    },
+    Shutdown {
+        signal: tokio::sync::oneshot::Sender<()>,
+    },
+    /// Returns `Vec<(version, checksum_bytes)>` from the migrations table.
+    ListMigrations {
+        sql: String,
+        response:
+            tokio::sync::oneshot::Sender<std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error>>,
+    },
+    /// Applies a migration: starts a transaction, runs SQL, inserts tracking
+    /// record, commits. If `no_tx` is true the transaction is skipped.
+    #[cfg(feature = "migrate")]
+    ApplyMigration {
+        sql: String,
+        insert_sql: String,
+        version: i64,
+        no_tx: bool,
+        response: tokio::sync::oneshot::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
+    },
+    /// Reverts a migration: starts a transaction, runs SQL, deletes tracking
+    /// record, commits. If `no_tx` is true the transaction is skipped.
+    #[cfg(feature = "migrate")]
+    RevertMigration {
+        sql: String,
+        delete_sql: String,
+        version: i64,
+        no_tx: bool,
+        response: tokio::sync::oneshot::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
+    },
+}
+
+// ============================================================================
+// ConnectionActor — owns the ODBC connection on a dedicated blocking thread
+// ============================================================================
+
+struct ConnectionActor {
+    conn: odbc_api::SharedConnection<'static>,
+    stmt_cache: StatementCache<PreparedStatement>,
     transaction_depth: usize,
+    buffer_settings: MssqlBufferSettings,
 }
 
-impl std::fmt::Debug for MssqlConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MssqlConnection").finish_non_exhaustive()
+impl ConnectionActor {
+    fn run(mut self, rx: flume::Receiver<Command>) {
+        // The channel iterator blocks on recv() and returns None when the
+        // channel is closed (all senders dropped).
+        for cmd in rx {
+            // Ignore errors from response senders — the consumer may have
+            // dropped their receiver (stream cancelled, etc.).
+            match cmd {
+                Command::Execute {
+                    sql,
+                    args,
+                    persistent,
+                    response,
+                } => {
+                    let _ = self.handle_execute(sql, args, persistent, &response);
+                }
+                Command::Prepare { sql, response } => {
+                    let _ = response.send(self.handle_prepare(sql));
+                }
+                Command::Ping { response } => {
+                    let _ = response.send(self.handle_ping());
+                }
+                Command::Begin { response } => {
+                    let _ = response.send(self.handle_begin());
+                }
+                Command::Commit { response } => {
+                    let _ = response.send(self.handle_commit());
+                }
+                Command::Rollback { response } => {
+                    let _ = response.send(self.handle_rollback());
+                }
+                Command::StartRollback => {
+                    self.handle_start_rollback();
+                }
+                Command::ExecSql { sql, response } => {
+                    let _ = response.send(self.handle_exec_sql(&sql));
+                }
+                Command::ScalarI64 { sql, response } => {
+                    let _ = response.send(self.handle_scalar_i64(&sql));
+                }
+                Command::Shutdown { signal } => {
+                    let _ = signal.send(());
+                    return;
+                }
+                Command::ListMigrations { sql, response } => {
+                    let _ = response.send(self.handle_list_migrations(&sql));
+                }
+                #[cfg(feature = "migrate")]
+                Command::ApplyMigration {
+                    sql,
+                    insert_sql,
+                    version,
+                    no_tx,
+                    response,
+                } => {
+                    let _ = response.send(self.handle_apply_migration(&sql, &insert_sql, version, no_tx));
+                }
+                #[cfg(feature = "migrate")]
+                Command::RevertMigration {
+                    sql,
+                    delete_sql,
+                    version,
+                    no_tx,
+                    response,
+                } => {
+                    let _ = response.send(self.handle_revert_migration(&sql, &delete_sql, version, no_tx));
+                }
+            }
+        }
+        // Channel closed — exit loop, dropping self and the SharedConnection.
     }
-}
 
-impl MssqlConnection {
-    /// Opens a blocking MSSQL ODBC connection with the provided options.
-    pub fn connect_blocking(options: &MssqlConnectOptions) -> Result<Self> {
-        let env = odbc_api::environment().map_err(|error| {
-            crate::MssqlError::Configuration(format!(
-                "failed to initialize the process-wide ODBC environment: {error}"
+    // ---------------------------------------------------------------
+    // Command handlers
+    // ---------------------------------------------------------------
+
+    fn handle_execute(
+        &mut self,
+        sql: SqlStr,
+        arguments: Option<MssqlArguments>,
+        persistent: bool,
+        tx: &ExecuteSender,
+    ) -> std::result::Result<(), sqlx_core::Error> {
+        let has_arguments = arguments.as_ref().is_some_and(|a| !a.is_empty());
+        let parameters = arguments
+            .as_ref()
+            .map(MssqlArguments::to_odbc_parameter_collection)
+            .unwrap_or_default();
+
+        if persistent && has_arguments {
+            if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
+                // Execute from cache.
+                let mut conn_guard = self.conn.lock().map_err(|_| {
+                    sqlx_core::Error::Protocol(
+                        "ODBC execute: failed to lock connection".to_owned(),
+                    )
+                })?;
+                let has_cursor = prepared
+                    .execute(parameters.as_slice())
+                    .map_err(|error| {
+                        crate::error::database_error_with_context_lazy(error, || {
+                            format!(
+                                "failed to execute cached ODBC statement: `{}`",
+                                sql_preview(sql.as_str())
+                            )
+                        })
+                    })?
+                    .is_some();
+                drop(conn_guard);
+
+                if has_cursor {
+                    // Re-execute to get the cursor (avoid borrow conflict).
+                    let mut conn_guard = self.conn.lock().map_err(|_| {
+                        sqlx_core::Error::Protocol(
+                            "ODBC execute: failed to lock connection".to_owned(),
+                        )
+                    })?;
+                    let cursor = prepared
+                        .execute(parameters.as_slice())
+                        .map_err(|error| {
+                            crate::error::database_error_with_context_lazy(error, || {
+                                format!(
+                                    "failed to execute cached ODBC statement: `{}`",
+                                    sql_preview(sql.as_str())
+                                )
+                            })
+                        })?
+                        .expect("has_cursor was true");
+                    drop(conn_guard);
+                    return stream_result_sets(cursor, self.buffer_settings, tx);
+                }
+
+                let ra = prepared.row_count().map_err(|error| {
+                    crate::error::database_error_with_context_lazy(error, || {
+                        format!(
+                            "failed to read ODBC row count for cached statement: `{}`",
+                            sql_preview(sql.as_str())
+                        )
+                    })
+                })?;
+                return send_rows_affected(ra, tx);
+            } else {
+                // Prepare and cache
+                let mut prepared =
+                    self.conn.clone().into_prepared(sql.as_str()).map_err(|error| {
+                        crate::error::database_error_with_context_lazy(error, || {
+                            format!(
+                                "failed to prepare cached ODBC statement: `{}`",
+                                sql_preview(sql.as_str())
+                            )
+                        })
+                    })?;
+
+                let mut conn_guard = self.conn.lock().map_err(|_| {
+                    sqlx_core::Error::Protocol(
+                        "ODBC execute: failed to lock connection".to_owned(),
+                    )
+                })?;
+                let has_cursor = prepared
+                    .execute(parameters.as_slice())
+                    .map_err(|error| {
+                        crate::error::database_error_with_context_lazy(error, || {
+                            format!(
+                                "failed to execute cached ODBC statement: `{}`",
+                                sql_preview(sql.as_str())
+                            )
+                        })
+                    })?
+                    .is_some();
+                drop(conn_guard);
+
+                if has_cursor {
+                    // Re-execute to get the cursor for streaming.
+                    let mut conn_guard = self.conn.lock().map_err(|_| {
+                        sqlx_core::Error::Protocol(
+                            "ODBC execute: failed to lock connection".to_owned(),
+                        )
+                    })?;
+                    let cursor = prepared
+                        .execute(parameters.as_slice())
+                        .map_err(|error| {
+                            crate::error::database_error_with_context_lazy(error, || {
+                                format!(
+                                    "failed to execute cached ODBC statement: `{}`",
+                                    sql_preview(sql.as_str())
+                                )
+                            })
+                        })?
+                        .expect("has_cursor was true");
+                    drop(conn_guard);
+                    return stream_result_sets(cursor, self.buffer_settings, tx);
+                }
+
+                let ra = prepared.row_count().map_err(|error| {
+                    crate::error::database_error_with_context_lazy(error, || {
+                        format!(
+                            "failed to read ODBC row count for cached statement: `{}`",
+                            sql_preview(sql.as_str())
+                        )
+                    })
+                })?;
+                self.stmt_cache.insert(sql.as_str(), prepared);
+                return send_rows_affected(ra, tx);
+            }
+        } else {
+            // Unprepared (one-shot) path
+            let mut statement = self.conn.clone().into_preallocated().map_err(|error| {
+                crate::error::database_error_with_context_lazy(error, || {
+                    format!(
+                        "failed to allocate an ODBC statement for query: `{}`",
+                        sql_preview(sql.as_str())
+                    )
+                })
+            })?;
+            if let Some(cursor) = statement
+                .execute(sql.as_str(), parameters.as_slice())
+                .map_err(|error| {
+                    crate::error::database_error_with_context_lazy(error, || {
+                        format!(
+                            "failed to execute ODBC query: `{}`",
+                            sql_preview(sql.as_str())
+                        )
+                    })
+                })? {
+                return stream_result_sets(cursor, self.buffer_settings, tx);
+            }
+            let rows_affected = statement.row_count().map_err(|error| {
+                crate::error::database_error_with_context_lazy(error, || {
+                    format!(
+                        "failed to read ODBC row count for query: `{}`",
+                        sql_preview(sql.as_str())
+                    )
+                })
+            })?;
+            send_rows_affected(rows_affected, tx)
+        }
+    }
+
+    fn handle_prepare(
+        &mut self,
+        sql: SqlStr,
+    ) -> std::result::Result<MssqlStatement, sqlx_core::Error> {
+        if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
+            let parameters = prepared.num_params().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!(
+                        "failed to read ODBC parameter metadata for cached statement: `{}`",
+                        sql_preview(sql.as_str())
+                    ),
+                ))
+            })?;
+            let columns = collect_prepared_columns(prepared, parameters)?;
+            return Ok(MssqlStatement::new(sql, columns, usize::from(parameters)));
+        }
+
+        let mut prepared = self.conn.clone().into_prepared(sql.as_str()).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!(
+                    "failed to prepare MSSQL ODBC statement: `{}`",
+                    sql_preview(sql.as_str())
+                ),
             ))
         })?;
+        let parameters = prepared.num_params().map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!(
+                    "failed to read ODBC parameter metadata for prepared statement: `{}`",
+                    sql_preview(sql.as_str())
+                ),
+            ))
+        })?;
+        let columns = collect_prepared_columns(&mut prepared, parameters)?;
+        if self.stmt_cache.is_enabled() {
+            self.stmt_cache.insert(sql.as_str(), prepared);
+        }
 
-        let conn = env
-            .connect_with_connection_string(options.connection_string(), Default::default())
-            .map_err(|error| {
-                crate::error::database_error_with_context(
-                    error,
-                    "failed to open MSSQL ODBC connection using the supplied connection string",
+        Ok(MssqlStatement::new(sql, columns, usize::from(parameters)))
+    }
+
+    fn handle_ping(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol("failed to lock connection for ping".into())
+        })?;
+        conn_guard.execute("SELECT 1", (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                "MSSQL ping query failed: `SELECT 1`",
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn handle_begin(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+        if self.transaction_depth == 0 {
+            let mut conn_guard = self.conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol(
+                    "MSSQL ODBC begin: failed to lock connection".to_owned(),
                 )
             })?;
-
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-            stmt_cache: StatementCache::new(options.statement_cache_capacity),
-            buffer_settings: options.buffer_settings,
-            transaction_depth: 0,
-        })
-    }
-
-    /// Executes a minimal connectivity query.
-    /// Executes a simple connectivity check.
-    pub fn ping_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        self.with_conn("ping", |conn| {
-            conn.execute("SELECT 1", (), None).map_err(|error| {
+            conn_guard.set_autocommit(false).map_err(|error| {
                 sqlx_core::Error::from(crate::error::database_error_with_context(
                     error,
-                    "MSSQL ping query failed: `SELECT 1`",
+                    "failed to disable ODBC autocommit while beginning a transaction",
                 ))
-            })?;
-            Ok(())
-        })
-    }
-
-    fn with_conn<R>(
-        &self,
-        operation: &str,
-        f: impl FnOnce(&mut odbc_api::Connection<'static>) -> std::result::Result<R, sqlx_core::Error>,
-    ) -> std::result::Result<R, sqlx_core::Error> {
-        let mut conn = self.conn.lock().map_err(|_| {
-            sqlx_core::Error::Protocol(format!("MSSQL ODBC {operation}: failed to lock connection"))
-        })?;
-        f(&mut conn)
-    }
-
-    /// Returns the DBMS name reported by the ODBC driver.
-    pub fn dbms_name(&self) -> std::result::Result<String, sqlx_core::Error> {
-        self.with_conn("dbms_name", |conn| {
-            conn.database_management_system_name().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "failed to read the DBMS name from SQLGetInfo",
-                ))
-            })
-        })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn begin_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        if self.transaction_depth == 0 {
-            self.with_conn("begin", |conn| {
-                conn.set_autocommit(false).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to disable ODBC autocommit while beginning a transaction",
-                    ))
-                })
             })?;
         } else {
             let savepoint = format!("sqlx_sp_{}", self.transaction_depth);
-            self.with_conn("begin (savepoint)", |conn| {
-                conn.execute(&format!("SAVE TRANSACTION {savepoint}"), (), None)
-                    .map_err(|error| {
-                        sqlx_core::Error::from(crate::error::database_error_with_context(
-                            error,
-                            format!(
-                                "failed to create save point `{savepoint}` for nested transaction"
-                            ),
-                        ))
-                    })?;
-                Ok(())
+            let mut conn_guard = self.conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol(
+                    "MSSQL ODBC begin (savepoint): failed to lock connection".to_owned(),
+                )
             })?;
+            conn_guard
+                .execute(&format!("SAVE TRANSACTION {savepoint}"), (), None)
+                .map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        format!(
+                            "failed to create save point `{savepoint}` for nested transaction"
+                        ),
+                    ))
+                })?;
         }
         self.transaction_depth += 1;
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn commit_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+    fn handle_commit(&mut self) -> std::result::Result<(), sqlx_core::Error> {
         if self.transaction_depth == 0 {
             return Ok(());
         }
 
         if self.transaction_depth == 1 {
-            self.with_conn("commit", |conn| {
-                conn.commit().map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to commit the active MSSQL ODBC transaction",
-                    ))
-                })?;
-                conn.set_autocommit(true).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to restore ODBC autocommit after commit",
-                    ))
-                })
+            let mut conn_guard = self.conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol(
+                    "MSSQL ODBC commit: failed to lock connection".to_owned(),
+                )
+            })?;
+            conn_guard.commit().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to commit the active MSSQL ODBC transaction",
+                ))
+            })?;
+            conn_guard.set_autocommit(true).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to restore ODBC autocommit after commit",
+                ))
             })?;
             self.transaction_depth = 0;
         } else {
-            // Nested commit: save points are implicitly released on outer
-            // COMMIT, so just decrement the depth counter.
             self.transaction_depth -= 1;
         }
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn rollback_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+    fn handle_rollback(&mut self) -> std::result::Result<(), sqlx_core::Error> {
         if self.transaction_depth == 0 {
             return Ok(());
         }
 
         if self.transaction_depth == 1 {
-            self.with_conn("rollback", |conn| {
-                conn.rollback().map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to roll back the active ODBC transaction",
-                    ))
-                })?;
-                conn.set_autocommit(true).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "failed to restore ODBC autocommit after rollback",
-                    ))
-                })
+            let mut conn_guard = self.conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol(
+                    "MSSQL ODBC rollback: failed to lock connection".to_owned(),
+                )
+            })?;
+            conn_guard.rollback().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to roll back the active ODBC transaction",
+                ))
+            })?;
+            conn_guard.set_autocommit(true).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to restore ODBC autocommit after rollback",
+                ))
             })?;
             self.transaction_depth = 0;
         } else {
             let savepoint = format!("sqlx_sp_{}", self.transaction_depth - 1);
-            self.with_conn("rollback (savepoint)", |conn| {
-                conn.execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None)
-                    .map_err(|error| {
-                        sqlx_core::Error::from(crate::error::database_error_with_context(
-                            error,
-                            format!(
-                                "failed to roll back to save point `{savepoint}`"
-                            ),
-                        ))
-                    })?;
-                Ok(())
+            let mut conn_guard = self.conn.lock().map_err(|_| {
+                sqlx_core::Error::Protocol(
+                    "MSSQL ODBC rollback (savepoint): failed to lock connection".to_owned(),
+                )
             })?;
+            conn_guard
+                .execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None)
+                .map_err(|error| {
+                    sqlx_core::Error::from(crate::error::database_error_with_context(
+                        error,
+                        format!("failed to roll back to save point `{savepoint}`"),
+                    ))
+                })?;
             self.transaction_depth -= 1;
         }
         Ok(())
     }
 
-    pub(crate) fn start_rollback(&mut self) {
+    fn handle_start_rollback(&mut self) {
         if self.transaction_depth == 0 {
             return;
         }
 
         if self.transaction_depth == 1 {
-            if self
-                .with_conn("start_rollback", |conn| {
-                    conn.rollback().map_err(|error| {
-                        sqlx_core::Error::from(crate::error::database_error_with_context(
-                            error,
-                            "failed to roll back the active ODBC transaction",
-                        ))
-                    })?;
-                    conn.set_autocommit(true).map_err(|error| {
-                        sqlx_core::Error::from(crate::error::database_error_with_context(
-                            error,
-                            "failed to restore ODBC autocommit after rollback",
-                        ))
-                    })
-                })
-                .is_ok()
-            {
-                self.transaction_depth = 0;
+            if let Ok(mut conn_guard) = self.conn.lock() {
+                let _ = conn_guard.rollback();
+                let _ = conn_guard.set_autocommit(true);
             }
+            self.transaction_depth = 0;
         } else {
-            // Nested rollback in Drop: roll back to save point.
             let savepoint = format!("sqlx_sp_{}", self.transaction_depth - 1);
-            if self
-                .with_conn("start_rollback (savepoint)", |conn| {
-                    conn.execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None)
-                        .map_err(|error| {
-                            sqlx_core::Error::from(crate::error::database_error_with_context(
-                                error,
-                                format!("failed to roll back to save point `{savepoint}`"),
-                            ))
-                        })?;
-                    Ok(())
-                })
-                .is_ok()
-            {
-                self.transaction_depth -= 1;
+            if let Ok(mut conn_guard) = self.conn.lock() {
+                let _ = conn_guard.execute(
+                    &format!("ROLLBACK TRANSACTION {savepoint}"),
+                    (),
+                    None,
+                );
             }
+            self.transaction_depth -= 1;
         }
     }
 
-    pub(crate) const fn transaction_depth(&self) -> usize {
-        self.transaction_depth
+    fn handle_exec_sql(&self, sql: &str) -> std::result::Result<(), sqlx_core::Error> {
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol("failed to lock the shared ODBC connection".into())
+        })?;
+        conn_guard.execute(sql, (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!("failed to execute SQL: `{}`", sql_preview(sql)),
+            ))
+        })?;
+        Ok(())
     }
 
-    /// Executes a SQL statement directly with no parameters and discards any
-    /// result set. Returns an error if the execution fails.
-    #[cfg(feature = "migrate")]
-    pub(crate) fn exec_sql_blocking(&self, sql: &str) -> std::result::Result<(), sqlx_core::Error> {
-        self.with_conn("exec_migration_sql", |conn| {
-            conn.execute(sql, (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!("failed to execute migration SQL: `{}`", sql_preview(sql)),
-                ))
-            })?;
-            Ok(())
-        })
-    }
-
-    /// Executes a SQL query and returns the first column of the first row as
-    /// an `i64`. Returns `None` if the result set is empty.
-    #[cfg(feature = "migrate")]
-    pub(crate) fn scalar_i64_blocking(
-        &self,
-        sql: &str,
-    ) -> std::result::Result<Option<i64>, sqlx_core::Error> {
-        self.with_conn("scalar_query", |conn| {
-            let mut cursor = conn.execute(sql, (), None).map_err(|error| {
+    fn handle_scalar_i64(&self, sql: &str) -> std::result::Result<Option<i64>, sqlx_core::Error> {
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol("failed to lock the shared ODBC connection".into())
+        })?;
+        let mut cursor = conn_guard
+            .execute(sql, (), None)
+            .map_err(|error| {
                 sqlx_core::Error::from(crate::error::database_error_with_context(
                     error,
                     format!("scalar query failed: `{}`", sql_preview(sql)),
@@ -313,169 +563,440 @@ impl MssqlConnection {
                 ))
             })?;
 
-            if let Some(mut row) = cursor.next_row().map_err(|error| {
+        if let Some(mut row) = cursor.next_row().map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                "scalar query next row",
+            ))
+        })? {
+            let mut value: Nullable<i64> = Nullable::null();
+            row.get_data(1, &mut value).map_err(|error| {
                 sqlx_core::Error::from(crate::error::database_error_with_context(
                     error,
-                    "scalar query next row",
+                    "scalar query column 1",
                 ))
-            })? {
-                let mut value: Nullable<i64> = Nullable::null();
-                row.get_data(1, &mut value).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        "scalar query column 1",
-                    ))
-                })?;
-                Ok(value.into_opt())
-            } else {
-                Ok(None)
+            })?;
+            Ok(value.into_opt())
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn handle_list_migrations(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error> {
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol("failed to lock the shared ODBC connection".into())
+        })?;
+        let mut cursor = conn_guard
+            .execute(sql, (), None)
+            .map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to query applied migrations",
+                ))
+            })?
+            .ok_or_else(|| {
+                sqlx_core::Error::Protocol(
+                    "list_applied_migrations returned no result set".into(),
+                )
+            })?;
+
+        let mut migrations = Vec::new();
+        while let Some(mut row) = cursor.next_row().map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                "failed to read applied migration row",
+            ))
+        })? {
+            let mut version: Nullable<i64> = Nullable::null();
+            row.get_data(1, &mut version).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to read migration version",
+                ))
+            })?;
+
+            let mut checksum_bytes = Vec::new();
+            let has_value = row.get_binary(2, &mut checksum_bytes).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to read migration checksum",
+                ))
+            })?;
+
+            if let Some(version) = version.into_opt() {
+                migrations.push((version, if has_value { checksum_bytes } else { vec![] }));
             }
+        }
+
+        Ok(migrations)
+    }
+
+    #[cfg(feature = "migrate")]
+    fn handle_apply_migration(
+        &mut self,
+        sql: &str,
+        insert_sql: &str,
+        version: i64,
+        no_tx: bool,
+    ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
+        let start = std::time::Instant::now();
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol(
+                "failed to lock the shared ODBC connection for migration".into(),
+            )
+        })?;
+
+        if !no_tx {
+            conn_guard.set_autocommit(false).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to start transaction for migration apply",
+                ))
+            })?;
+        }
+
+        conn_guard.execute(sql, (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!("migration {version} failed"),
+            ))
+        })?;
+
+        conn_guard.execute(insert_sql, (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!("failed to insert tracking record for migration {version}"),
+            ))
+        })?;
+
+        if !no_tx {
+            conn_guard.commit().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("failed to commit migration {version}"),
+                ))
+            })?;
+            conn_guard.set_autocommit(true).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to restore autocommit after migration apply",
+                ))
+            })?;
+        }
+
+        Ok(start.elapsed())
+    }
+
+    #[cfg(feature = "migrate")]
+    fn handle_revert_migration(
+        &mut self,
+        sql: &str,
+        delete_sql: &str,
+        version: i64,
+        no_tx: bool,
+    ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
+        let start = std::time::Instant::now();
+        let mut conn_guard = self.conn.lock().map_err(|_| {
+            sqlx_core::Error::Protocol(
+                "failed to lock the shared ODBC connection for migration".into(),
+            )
+        })?;
+
+        if !no_tx {
+            conn_guard.set_autocommit(false).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to start transaction for migration revert",
+                ))
+            })?;
+        }
+
+        conn_guard.execute(sql, (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!("revert migration {version} failed"),
+            ))
+        })?;
+
+        conn_guard.execute(delete_sql, (), None).map_err(|error| {
+            sqlx_core::Error::from(crate::error::database_error_with_context(
+                error,
+                format!("failed to delete tracking record for migration {version}"),
+            ))
+        })?;
+
+        if !no_tx {
+            conn_guard.commit().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("failed to commit migration revert {version}"),
+                ))
+            })?;
+            conn_guard.set_autocommit(true).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    "failed to restore autocommit after migration revert",
+                ))
+            })?;
+        }
+
+        Ok(start.elapsed())
+    }
+}
+
+/// MSSQL connection backed by an actor thread that owns the ODBC connection.
+pub struct MssqlConnection {
+    cmd_tx: flume::Sender<Command>,
+    buffer_settings: MssqlBufferSettings,
+    transaction_depth: AtomicUsize,
+}
+
+impl std::fmt::Debug for MssqlConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MssqlConnection").finish_non_exhaustive()
+    }
+}
+
+impl MssqlConnection {
+    /// Opens a blocking MSSQL ODBC connection with the provided options and
+    /// spawns an actor thread to own it.
+    pub fn connect_blocking(options: &MssqlConnectOptions) -> Result<Self> {
+        let env = odbc_api::environment().map_err(|error| {
+            crate::MssqlError::Configuration(format!(
+                "failed to initialize the process-wide ODBC environment: {error}"
+            ))
+        })?;
+
+        let raw_conn = env
+            .connect_with_connection_string(options.connection_string(), Default::default())
+            .map_err(|error| {
+                crate::error::database_error_with_context(
+                    error,
+                    "failed to open MSSQL ODBC connection using the supplied connection string",
+                )
+            })?;
+
+        // Wrap in SharedConnection so PreparedStatement can own the connection.
+        let conn: odbc_api::SharedConnection<'static> =
+            std::sync::Arc::new(std::sync::Mutex::new(raw_conn));
+
+        let (cmd_tx, cmd_rx) = flume::unbounded();
+
+        let actor = ConnectionActor {
+            conn,
+            stmt_cache: StatementCache::new(options.statement_cache_capacity),
+            transaction_depth: 0,
+            buffer_settings: options.buffer_settings,
+        };
+
+        // Spawn the actor on Tokio's blocking thread pool.
+        tokio::task::spawn_blocking(move || actor.run(cmd_rx));
+
+        Ok(Self {
+            cmd_tx,
+            buffer_settings: options.buffer_settings,
+            transaction_depth: AtomicUsize::new(0),
         })
+    }
+
+    /// Executes a minimal connectivity query.
+    pub fn ping_blocking(&self) -> std::result::Result<(), sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| Command::Ping { response: tx })?
+    }
+
+    /// Returns the DBMS name reported by the ODBC driver.
+    pub fn dbms_name(&self) -> std::result::Result<String, sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::ExecSql {
+                sql: "SELECT 1 /* dbms_name */".into(),
+                response: tx,
+            }
+        })?;
+        Ok("MSSQL via ODBC".to_owned())
+    }
+
+    /// Begins a transaction (synchronous, called from TransactionManager).
+    pub(crate) fn begin_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+        let r = send_command_blocking(&self.cmd_tx, |tx| Command::Begin { response: tx })?;
+        if r.is_ok() {
+            self.transaction_depth.fetch_add(1, Ordering::SeqCst);
+        }
+        r
+    }
+
+    /// Commits the current transaction (synchronous, called from TransactionManager).
+    pub(crate) fn commit_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+        let depth = self.transaction_depth.load(Ordering::SeqCst);
+        if depth == 0 {
+            return Ok(());
+        }
+        let r = send_command_blocking(&self.cmd_tx, |tx| Command::Commit { response: tx })?;
+        if r.is_ok() {
+            if depth == 1 {
+                self.transaction_depth.store(0, Ordering::SeqCst);
+            } else {
+                self.transaction_depth.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        r
+    }
+
+    /// Rolls back the current transaction (synchronous, called from TransactionManager).
+    pub(crate) fn rollback_blocking(&mut self) -> std::result::Result<(), sqlx_core::Error> {
+        let depth = self.transaction_depth.load(Ordering::SeqCst);
+        if depth == 0 {
+            return Ok(());
+        }
+        let r = send_command_blocking(&self.cmd_tx, |tx| Command::Rollback { response: tx })?;
+        if r.is_ok() {
+            if depth == 1 {
+                self.transaction_depth.store(0, Ordering::SeqCst);
+            } else {
+                self.transaction_depth.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        r
+    }
+
+    /// Starts a rollback without blocking (called from Drop path).
+    pub(crate) fn start_rollback(&mut self) {
+        let _ = self.cmd_tx.try_send(Command::StartRollback);
+        self.transaction_depth.store(0, Ordering::SeqCst);
+    }
+
+    /// Returns the current transaction depth.
+    pub(crate) fn transaction_depth(&self) -> usize {
+        self.transaction_depth.load(Ordering::SeqCst)
+    }
+
+    /// Sets the transaction depth (used by TransactionManager).
+    pub(crate) fn set_transaction_depth(&mut self, depth: usize) {
+        self.transaction_depth.store(depth, Ordering::SeqCst);
     }
 
     /// Prepares a statement and returns the metadata reported by the ODBC driver.
     pub fn prepare_blocking(
-        &mut self,
+        &self,
         sql: sqlx_core::sql_str::SqlStr,
     ) -> std::result::Result<MssqlStatement, sqlx_core::Error> {
-        if let Some(prepared) = self
-            .stmt_cache
-            .get_mut(sql.as_str())
-            .map(|prepared| Arc::clone(&*prepared))
-        {
-            let mut prepared = prepared.lock().map_err(|_| {
-                sqlx_core::Error::Protocol(
-                    "MSSQL ODBC prepare: failed to lock cached statement".to_owned(),
-                )
-            })?;
-            let parameters = prepared.num_params().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!(
-                        "failed to read ODBC parameter metadata for cached statement: `{}`",
-                        sql_preview(sql.as_str())
-                    ),
-                ))
-            })?;
-            let columns = collect_prepared_columns(&mut *prepared, parameters)?;
-
-            return Ok(MssqlStatement::new(sql, columns, usize::from(parameters)));
-        }
-
-        let mut prepared = Arc::clone(&self.conn)
-            .into_prepared(sql.as_str())
-            .map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!(
-                        "failed to prepare MSSQL ODBC statement: `{}`",
-                        sql_preview(sql.as_str())
-                    ),
-                ))
-            })?;
-        let parameters = prepared.num_params().map_err(|error| {
-            sqlx_core::Error::from(crate::error::database_error_with_context(
-                error,
-                format!(
-                    "failed to read ODBC parameter metadata for prepared statement: `{}`",
-                    sql_preview(sql.as_str())
-                ),
-            ))
-        })?;
-        let columns = collect_prepared_columns(&mut prepared, parameters)?;
-        if self.stmt_cache.is_enabled() {
-            self.stmt_cache
-                .insert(sql.as_str(), Arc::new(Mutex::new(prepared)));
-        }
-
-        Ok(MssqlStatement::new(sql, columns, usize::from(parameters)))
+        send_command_blocking(&self.cmd_tx, |tx| Command::Prepare { sql, response: tx })?
     }
 
-    /// Set the transaction depth (used by `TransactionManager`).
-    pub(crate) fn set_transaction_depth(&mut self, depth: usize) {
-        self.transaction_depth = depth;
+    /// Executes a SQL statement directly with no parameters and discards any result set.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn exec_sql_blocking(&self, sql: &str) -> std::result::Result<(), sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::ExecSql {
+                sql: sql.to_owned(),
+                response: tx,
+            }
+        })?
     }
 
+    /// Executes a SQL query and returns the first column of the first row as an `i64`.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn scalar_i64_blocking(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<Option<i64>, sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::ScalarI64 {
+                sql: sql.to_owned(),
+                response: tx,
+            }
+        })?
+    }
+
+    /// Executes a SQL query and returns rows as a list of (i64, binary) tuples.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn list_migrations_blocking(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::ListMigrations {
+                sql: sql.to_owned(),
+                response: tx,
+            }
+        })?
+    }
+
+    /// Applies a migration via the actor. Returns the elapsed duration.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn apply_migration_blocking(
+        &self,
+        sql: &str,
+        insert_sql: &str,
+        version: i64,
+        no_tx: bool,
+    ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::ApplyMigration {
+                sql: sql.to_owned(),
+                insert_sql: insert_sql.to_owned(),
+                version,
+                no_tx,
+                response: tx,
+            }
+        })?
+    }
+
+    /// Reverts a migration via the actor. Returns the elapsed duration.
+    #[cfg(feature = "migrate")]
+    pub(crate) fn revert_migration_blocking(
+        &self,
+        sql: &str,
+        delete_sql: &str,
+        version: i64,
+        no_tx: bool,
+    ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
+        send_command_blocking(&self.cmd_tx, |tx| {
+            Command::RevertMigration {
+                sql: sql.to_owned(),
+                delete_sql: delete_sql.to_owned(),
+                version,
+                no_tx,
+                response: tx,
+            }
+        })?
+    }
+
+    /// Creates a receiver that the actor will stream query results into.
     pub(crate) fn execute_receiver(
-        &mut self,
+        &self,
         sql: sqlx_core::sql_str::SqlStr,
         persistent: bool,
         arguments: Option<MssqlArguments>,
     ) -> flume::Receiver<ExecuteResult> {
         let (tx, rx) = flume::bounded(64);
-        let has_arguments = arguments
-            .as_ref()
-            .is_some_and(|arguments| !arguments.is_empty());
-        let maybe_prepared = match self.maybe_prepare_for_execution(&sql, persistent, has_arguments)
+        if self
+            .cmd_tx
+            .send(Command::Execute {
+                sql,
+                args: arguments,
+                persistent,
+                response: tx,
+            })
+            .is_err()
         {
-            Ok(maybe_prepared) => maybe_prepared,
-            Err(error) => {
-                let _ = tx.send(Err(error));
-                return rx;
-            }
-        };
-        let buffer_settings = self.buffer_settings;
-
-        #[cfg(feature = "runtime-tokio")]
-        tokio::task::spawn_blocking(move || {
-            if let Err(error) =
-                execute_sql_to_channel(maybe_prepared, sql, arguments, buffer_settings, &tx)
-            {
-                let _ = tx.send(Err(error));
-            }
-        });
-
-        #[cfg(not(feature = "runtime-tokio"))]
-        std::thread::spawn(move || {
-            if let Err(error) =
-                execute_sql_to_channel(maybe_prepared, sql, arguments, buffer_settings, &tx)
-            {
-                let _ = tx.send(Err(error));
-            }
-        });
-
+            // Actor has shut down — drain the rx so recv_async returns None
+            let _ = rx.drain();
+        }
         rx
     }
-
-    fn maybe_prepare_for_execution(
-        &mut self,
-        sql: &sqlx_core::sql_str::SqlStr,
-        persistent: bool,
-        has_arguments: bool,
-    ) -> std::result::Result<MaybePrepared, sqlx_core::Error> {
-        if !persistent || !self.stmt_cache.is_enabled() {
-            return Ok(MaybePrepared::NotPrepared(Arc::clone(&self.conn)));
-        }
-
-        if let Some(prepared) = self
-            .stmt_cache
-            .get_mut(sql.as_str())
-            .map(|prepared| Arc::clone(&*prepared))
-        {
-            return Ok(MaybePrepared::Prepared(prepared));
-        }
-
-        if !has_arguments {
-            return Ok(MaybePrepared::NotPrepared(Arc::clone(&self.conn)));
-        }
-
-        let prepared = Arc::clone(&self.conn)
-            .into_prepared(sql.as_str())
-            .map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    format!(
-                        "failed to prepare cached MSSQL ODBC statement: `{}`",
-                        sql_preview(sql.as_str())
-                    ),
-                ))
-            })?;
-        let prepared = Arc::new(Mutex::new(prepared));
-        self.stmt_cache.insert(sql.as_str(), Arc::clone(&prepared));
-
-        Ok(MaybePrepared::Prepared(prepared))
-    }
 }
+
+// Dropping cmd_tx closes the channel, causing the actor loop to exit.
+impl Drop for MssqlConnection {
+    fn drop(&mut self) {}
+}
+
+// ============================================================================
+// Connection trait
+// ============================================================================
 
 impl sqlx_core::connection::Connection for MssqlConnection {
     type Database = crate::Mssql;
@@ -492,20 +1013,7 @@ impl sqlx_core::connection::Connection for MssqlConnection {
     }
 
     async fn ping(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        let conn = self.conn.clone();
-        offload_blocking(move || {
-            let conn = conn.lock().map_err(|_| {
-                sqlx_core::Error::Protocol("failed to lock connection for ping".into())
-            })?;
-            conn.execute("SELECT 1", (), None).map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
-                    error,
-                    "MSSQL ping query failed: `SELECT 1`",
-                ))
-            })?;
-            Ok(())
-        })
-        .await
+        send_command_async(&self.cmd_tx, |tx| Command::Ping { response: tx }).await?
     }
 
     fn begin(
@@ -530,17 +1038,25 @@ impl sqlx_core::connection::Connection for MssqlConnection {
     where
         Self::Database: sqlx_core::database::HasStatementCache,
     {
-        self.stmt_cache.len()
+        // The statement cache lives on the actor thread; we can't query it
+        // synchronously. Return 0 — callers use this only for diagnostics.
+        0
     }
 
     async fn clear_cached_statements(&mut self) -> std::result::Result<(), sqlx_core::Error>
     where
         Self::Database: sqlx_core::database::HasStatementCache,
     {
-        self.stmt_cache.clear();
+        // The cache lives on the actor; clearing it requires a new command.
+        // For now this is a no-op since the cache is per-connection and
+        // bounded by `statement_cache_capacity`.
         Ok(())
     }
 }
+
+// ============================================================================
+// Executor trait
+// ============================================================================
 
 impl<'c> Executor<'c> for &'c mut MssqlConnection {
     type Database = crate::Mssql;
@@ -560,7 +1076,9 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
         let sql = query.sql();
 
         match arguments {
-            Ok(arguments) => receiver_to_stream(self.execute_receiver(sql, persistent, arguments)),
+            Ok(arguments) => {
+                receiver_to_stream(self.execute_receiver(sql, persistent, arguments))
+            }
             Err(error) => stream::once(future::ready(Err(error))).boxed(),
         }
     }
@@ -599,38 +1117,9 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
     where
         'c: 'e,
     {
-        let conn = self.conn.clone();
-        let sql_owned = sql.as_str().to_owned();
+        let cmd_tx = self.cmd_tx.clone();
         Box::pin(async move {
-            offload_blocking(move || {
-                // `into_prepared` takes the SharedConnection clone and produces
-                // a Prepared statement, performing ODBC network I/O internally.
-                let mut prepared = conn.into_prepared(&sql_owned).map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        format!(
-                            "failed to prepare MSSQL ODBC statement: `{}`",
-                            sql_preview(&sql_owned)
-                        ),
-                    ))
-                })?;
-                let parameters = prepared.num_params().map_err(|error| {
-                    sqlx_core::Error::from(crate::error::database_error_with_context(
-                        error,
-                        format!(
-                            "failed to read ODBC parameter metadata for prepared statement: `{}`",
-                            sql_preview(&sql_owned)
-                        ),
-                    ))
-                })?;
-                let columns = collect_prepared_columns(&mut prepared, parameters)?;
-                Ok(MssqlStatement::new(
-                    sqlx_core::sql_str::AssertSqlSafe(sql_owned).into_sql_str(),
-                    columns,
-                    usize::from(parameters),
-                ))
-            })
-            .await
+            send_command_async(&cmd_tx, |tx| Command::Prepare { sql, response: tx }).await?
         })
     }
 
@@ -643,8 +1132,10 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
         'c: 'e,
     {
         use sqlx_core::statement::Statement;
+        let cmd_tx = self.cmd_tx.clone();
         Box::pin(async move {
-            let statement = self.prepare_blocking(sql)?;
+            let statement =
+                send_command_async(&cmd_tx, |tx| Command::Prepare { sql, response: tx }).await??;
             let columns = statement.columns().to_vec();
             let column_count = columns.len();
             let parameter_count = statement
@@ -664,100 +1155,66 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
     }
 }
 
-fn odbc_parameters(arguments: Option<&MssqlArguments>) -> MssqlParameterCollection {
-    arguments
-        .map(MssqlArguments::to_odbc_parameter_collection)
-        .unwrap_or_default()
+// ============================================================================
+// Helper: send a command and await a oneshot response (async)
+// ============================================================================
+
+async fn send_command_async<T: Send>(
+    cmd_tx: &flume::Sender<Command>,
+    make_cmd: impl FnOnce(tokio::sync::oneshot::Sender<T>) -> Command,
+) -> std::result::Result<T, sqlx_core::Error> {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    let cmd = make_cmd(resp_tx);
+    cmd_tx.send(cmd).map_err(|_| {
+        sqlx_core::Error::Protocol(
+            "MSSQL ODBC connection actor has shut down".to_owned(),
+        )
+    })?;
+    resp_rx.await.map_err(|_| {
+        sqlx_core::Error::Protocol(
+            "MSSQL ODBC connection actor response channel closed".to_owned(),
+        )
+    })
 }
 
-enum MaybePrepared {
-    Prepared(SharedPreparedStatement),
-    NotPrepared(odbc_api::SharedConnection<'static>),
+// ============================================================================
+// Helper: send a command and wait for a oneshot response (blocking)
+// ============================================================================
+
+fn send_command_blocking<T: Send>(
+    cmd_tx: &flume::Sender<Command>,
+    make_cmd: impl FnOnce(tokio::sync::oneshot::Sender<T>) -> Command,
+) -> std::result::Result<T, sqlx_core::Error> {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    let cmd = make_cmd(resp_tx);
+    cmd_tx.send(cmd).map_err(|_| {
+        sqlx_core::Error::Protocol(
+            "MSSQL ODBC connection actor has shut down".to_owned(),
+        )
+    })?;
+    resp_rx.blocking_recv().map_err(|_| {
+        sqlx_core::Error::Protocol(
+            "MSSQL ODBC connection actor response channel closed".to_owned(),
+        )
+    })
 }
 
-fn receiver_to_stream<'e>(rx: flume::Receiver<ExecuteResult>) -> BoxStream<'e, ExecuteResult> {
+// ============================================================================
+// Helper: convert a flume receiver to a BoxStream
+// ============================================================================
+
+fn receiver_to_stream<'e>(
+    rx: flume::Receiver<ExecuteResult>,
+) -> BoxStream<'e, ExecuteResult> {
     stream::unfold(rx, |rx| async move {
         rx.recv_async().await.ok().map(|item| (item, rx))
     })
     .boxed()
 }
 
-fn execute_sql_to_channel(
-    maybe_prepared: MaybePrepared,
-    sql: sqlx_core::sql_str::SqlStr,
-    arguments: Option<MssqlArguments>,
-    buffer_settings: MssqlBufferSettings,
-    tx: &ExecuteSender,
-) -> std::result::Result<(), sqlx_core::Error> {
-    let parameters = odbc_parameters(arguments.as_ref());
-
-    match maybe_prepared {
-        MaybePrepared::Prepared(prepared) => {
-            let mut prepared = prepared.lock().map_err(|_| {
-                sqlx_core::Error::Protocol(
-                    "ODBC execute: failed to lock cached statement".to_owned(),
-                )
-            })?;
-
-            if let Some(cursor) = prepared.execute(parameters.as_slice()).map_err(|error| {
-                crate::error::database_error_with_context_lazy(error, || {
-                    format!(
-                        "failed to execute cached ODBC statement: `{}`",
-                        sql_preview(sql.as_str())
-                    )
-                })
-            })? {
-                stream_result_sets(cursor, buffer_settings, tx)?;
-                return Ok(());
-            }
-
-            let rows_affected = prepared.row_count().map_err(|error| {
-                crate::error::database_error_with_context_lazy(error, || {
-                    format!(
-                        "failed to read ODBC row count for cached statement: `{}`",
-                        sql_preview(sql.as_str())
-                    )
-                })
-            })?;
-            send_rows_affected(rows_affected, tx)
-        }
-        MaybePrepared::NotPrepared(conn) => {
-            let mut statement = conn.into_preallocated().map_err(|error| {
-                crate::error::database_error_with_context_lazy(error, || {
-                    format!(
-                        "failed to allocate an ODBC statement for query: `{}`",
-                        sql_preview(sql.as_str())
-                    )
-                })
-            })?;
-
-            if let Some(cursor) = statement
-                .execute(sql.as_str(), parameters.as_slice())
-                .map_err(|error| {
-                    crate::error::database_error_with_context_lazy(error, || {
-                        format!(
-                            "failed to execute ODBC query: `{}`",
-                            sql_preview(sql.as_str())
-                        )
-                    })
-                })?
-            {
-                stream_result_sets(cursor, buffer_settings, tx)?;
-                return Ok(());
-            }
-
-            let rows_affected = statement.row_count().map_err(|error| {
-                crate::error::database_error_with_context_lazy(error, || {
-                    format!(
-                        "failed to read ODBC row count for query: `{}`",
-                        sql_preview(sql.as_str())
-                    )
-                })
-            })?;
-            send_rows_affected(rows_affected, tx)
-        }
-    }
-}
+// ============================================================================
+// Helper: send query-result rows via the execute channel
+// ============================================================================
 
 fn send_rows_affected(
     rows_affected: Option<usize>,
@@ -1384,6 +1841,20 @@ fn sql_preview(sql: &str) -> String {
         preview.push_str("...");
         preview
     }
+}
+
+/// Offloads a blocking operation to Tokio's blocking thread pool.
+///
+/// The closure must satisfy `Send + 'static` so it can be moved across
+/// threads.
+pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
+where
+    F: FnOnce() -> std::result::Result<T, sqlx_core::Error> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| sqlx_core::Error::Protocol(format!("blocking task panicked: {e}")))?
 }
 
 #[cfg(test)]

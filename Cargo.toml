@@ -26,6 +26,7 @@ runtime-tokio = ["sqlx-mssql-odbc-core/runtime-tokio"]
 rust_decimal = ["sqlx-mssql-odbc-core/rust_decimal"]
 tls-none = ["sqlx-mssql-odbc-core/tls-none"]
 uuid = ["sqlx-mssql-odbc-core/uuid", "sqlx-mssql-odbc-macros/uuid"]
+spatial = ["sqlx-mssql-odbc-core/spatial"]
 vendored-unix-odbc = ["sqlx-mssql-odbc-core/vendored-unix-odbc"]
 # Macro features
 macros = ["sqlx-mssql-odbc-macros"]
