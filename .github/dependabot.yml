@@ -1,0 +1,107 @@
+# Dependabot configuration for sqlx-mssql-odbc
+#
+# See https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+
+  # ── Cargo (Rust) dependencies ──────────────────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    # Group related dependency updates into fewer PRs
+    groups:
+      rust-sqlx-ecosystem:
+        patterns:
+          - "sqlx-core"
+          - "sqlx-macros-core"
+          - "sqlx-cli"
+          - "sqlx"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-odbc:
+        patterns:
+          - "odbc-api"
+          - "odbc-sys"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-async:
+        patterns:
+          - "tokio"
+          - "futures-*"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-serde:
+        patterns:
+          - "serde"
+          - "serde_json"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-proc-macro:
+        patterns:
+          - "proc-macro2"
+          - "syn"
+          - "quote"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-types:
+        patterns:
+          - "chrono"
+          - "time"
+          - "uuid"
+          - "bigdecimal"
+          - "rust_decimal"
+          - "geo-types"
+          - "wkb"
+        update-types:
+          - "minor"
+          - "patch"
+      rust-utilities:
+        patterns:
+          - "thiserror"
+          - "log"
+          - "url"
+          - "flume"
+          - "console"
+          - "clap"
+    # Labels applied to all Cargo PRs
+    labels:
+      - "dependencies"
+      - "rust"
+    open-pull-requests-limit: 10
+    versioning-strategy: "increase"
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "ci"
+    open-pull-requests-limit: 5
+
+  # ── Docker ─────────────────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "docker"
+    open-pull-requests-limit: 5
