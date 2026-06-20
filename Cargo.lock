@@ -616,6 +616,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "deranged"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+
+[[package]]
 name = "dialoguer"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1486,6 +1492,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-conv"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+
+[[package]]
 name = "num-integer"
 version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1912,6 +1924,12 @@ checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
 ]
+
+[[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -2460,6 +2478,7 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-stream",
  "toml",
@@ -2571,9 +2590,11 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27"
 dependencies = [
+ "bigdecimal",
  "bitflags 2.11.1",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.11.3",
  "dotenvy",
@@ -2583,12 +2604,15 @@ dependencies = [
  "generic-array",
  "log",
  "percent-encoding",
+ "rust_decimal",
  "serde",
  "sha1",
  "sha2 0.11.0",
  "sqlx-core",
  "thiserror 2.0.18",
+ "time",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2599,8 +2623,10 @@ checksum = "87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e"
 dependencies = [
  "atoi",
  "base64",
+ "bigdecimal",
  "bitflags 2.11.1",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -2614,7 +2640,9 @@ dependencies = [
  "log",
  "md-5",
  "memchr",
+ "num-bigint",
  "rand 0.10.1",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2622,7 +2650,9 @@ dependencies = [
  "sqlx-core",
  "stringprep",
  "thiserror 2.0.18",
+ "time",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -2633,6 +2663,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "form_urlencoded",
  "futures-channel",
@@ -2646,8 +2677,10 @@ dependencies = [
  "serde",
  "sqlx-core",
  "thiserror 2.0.18",
+ "time",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2773,6 +2806,36 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "time"
+version = "0.3.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "711a53c2d47bbd818258c498c8dbfe186a2526c631495cfe7e078567f86b8469"
+dependencies = [
+ "deranged",
+ "num-conv",
+ "powerfmt",
+ "serde_core",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "time-macros"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71c652a3727a9cbb9a02f707f530b618ce00d0ccd762009c8c23bd191df3c17d"
+dependencies = [
+ "num-conv",
+ "time-core",
 ]
 
 [[package]]
