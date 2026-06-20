@@ -6,7 +6,7 @@ license = "Apache-2.0"
 repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
 description = "CLI tools for sqlx-mssql-odbc."
 readme = "../README.md"
-keywords = ["sqlx", "mssql", "sql-server", "odbc", "database", "cli"]
+keywords = ["sqlx", "mssql", "odbc", "database", "cli"]
 categories = ["database", "command-line-utilities"]
 rust-version = "1.96"
 
