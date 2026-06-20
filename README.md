@@ -136,7 +136,7 @@ migrations, and preparing offline query data.
 ### Install
 
 ```bash
-cargo install --path sqlx-mssql-odbc-cli
+cargo install sqlx-mssql-odbc-cli
 ```
 
 After installation, the `sqlx-mssql` binary is available on your `PATH`.
