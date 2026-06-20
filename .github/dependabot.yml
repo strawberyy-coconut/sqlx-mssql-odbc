@@ -78,7 +78,7 @@ updates:
       - "dependencies"
       - "rust"
     open-pull-requests-limit: 10
-    versioning-strategy: "increase"
+    versioning-strategy: auto
 
   # ── GitHub Actions ─────────────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
