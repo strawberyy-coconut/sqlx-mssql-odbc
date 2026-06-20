@@ -17,6 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (unixODBC)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unixodbc-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -64,6 +69,10 @@ jobs:
             cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
           fi
 
+      - name: Wait for crates.io index propagation
+        if: ${{ ! (inputs.dry-run || false) }}
+        run: sleep 30
+
       - name: Publish sqlx-mssql-odbc-macros
         run: |
           cd sqlx-mssql-odbc-macros
@@ -73,6 +82,10 @@ jobs:
             cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
           fi
 
+      - name: Wait for crates.io index propagation
+        if: ${{ ! (inputs.dry-run || false) }}
+        run: sleep 30
+
       - name: Publish sqlx-mssql-odbc-cli
         run: |
           cd sqlx-mssql-odbc-cli
@@ -81,6 +94,10 @@ jobs:
           else
             cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
           fi
+
+      - name: Wait for crates.io index propagation
+        if: ${{ ! (inputs.dry-run || false) }}
+        run: sleep 30
 
       - name: Publish sqlx-mssql-odbc (umbrella)
         run: |
