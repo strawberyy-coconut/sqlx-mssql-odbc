@@ -10,7 +10,7 @@ published to crates.io and examples use `sqlx-core` directly.
 
 ```toml
 [dependencies]
-sqlx-mssql-odbc = "0.1.4"
+sqlx-mssql-odbc = "0.1.5"
 sqlx-core = "0.9.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
