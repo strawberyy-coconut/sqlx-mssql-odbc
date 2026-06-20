@@ -14,6 +14,8 @@ on:
 jobs:
   verify-and-publish:
     runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +31,6 @@ jobs:
         id: version
         run: |
           TAG="${{ github.ref_name }}"
-          # Strip leading 'v' if present
           VER="${TAG#v}"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VER"
@@ -62,11 +63,18 @@ jobs:
 
       - name: Publish sqlx-mssql-odbc-core
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CRATE="sqlx-mssql-odbc-core"
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
+          if [ "$HTTP" = "200" ]; then
+            echo "::notice::${CRATE}@${VERSION} already on crates.io — skipping"
+            exit 0
+          fi
           cd sqlx-mssql-odbc-core
           if [ "${{ inputs.dry-run || false }}" = "true" ]; then
             cargo publish --dry-run
           else
-            cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+            cargo publish
           fi
 
       - name: Wait for crates.io index propagation
@@ -75,11 +83,18 @@ jobs:
 
       - name: Publish sqlx-mssql-odbc-macros
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CRATE="sqlx-mssql-odbc-macros"
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
+          if [ "$HTTP" = "200" ]; then
+            echo "::notice::${CRATE}@${VERSION} already on crates.io — skipping"
+            exit 0
+          fi
           cd sqlx-mssql-odbc-macros
           if [ "${{ inputs.dry-run || false }}" = "true" ]; then
             cargo publish --dry-run
           else
-            cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+            cargo publish
           fi
 
       - name: Wait for crates.io index propagation
@@ -88,11 +103,18 @@ jobs:
 
       - name: Publish sqlx-mssql-odbc-cli
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CRATE="sqlx-mssql-odbc-cli"
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
+          if [ "$HTTP" = "200" ]; then
+            echo "::notice::${CRATE}@${VERSION} already on crates.io — skipping"
+            exit 0
+          fi
           cd sqlx-mssql-odbc-cli
           if [ "${{ inputs.dry-run || false }}" = "true" ]; then
             cargo publish --dry-run
           else
-            cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+            cargo publish
           fi
 
       - name: Wait for crates.io index propagation
@@ -101,8 +123,15 @@ jobs:
 
       - name: Publish sqlx-mssql-odbc (umbrella)
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CRATE="sqlx-mssql-odbc"
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
+          if [ "$HTTP" = "200" ]; then
+            echo "::notice::${CRATE}@${VERSION} already on crates.io — skipping"
+            exit 0
+          fi
           if [ "${{ inputs.dry-run || false }}" = "true" ]; then
             cargo publish --dry-run
           else
-            cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+            cargo publish
           fi
