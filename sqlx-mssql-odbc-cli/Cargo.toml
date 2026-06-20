@@ -22,6 +22,6 @@ path = "src/bin/sqlx-mssql.rs"
 clap = { version = "4", features = ["derive"] }
 console = "0.15"
 sqlx-cli = "0.9.0"
-sqlx-core = { version = "=0.9.0", default-features = false, features = ["any", "migrate"] }
+sqlx-core = { version = "0.9.0", default-features = false, features = ["any", "migrate"] }
 sqlx-mssql-odbc-core = { version = "0.1.4", path = "../sqlx-mssql-odbc-core", features = ["any", "migrate"] }
 tokio = { version = "1.25.0", features = ["rt-multi-thread", "macros"] }

@@ -8,7 +8,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sqlx-core = "=0.9.0"
+//! sqlx-core = "0.9.0"
 //! sqlx-mssql-odbc = "0.1"
 //! tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 //! ```

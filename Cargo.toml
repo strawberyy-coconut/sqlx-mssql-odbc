@@ -39,7 +39,7 @@ macros = ["sqlx-mssql-odbc-macros"]
 derive = ["sqlx-mssql-odbc-macros/derive"]
 
 [dependencies]
-sqlx-core = { version = "=0.9.0" }
+sqlx-core = { version = "0.9.0" }
 sqlx-mssql-odbc-core = { version = "0.1.4", path = "./sqlx-mssql-odbc-core", default-features = false }
 sqlx-mssql-odbc-macros = { version = "0.1.4", path = "./sqlx-mssql-odbc-macros", optional = true }
 
