@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "full"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "futures-util",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "sqlx-mssql-odbc"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "futures-util",
  "sqlx-core",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "sqlx-mssql-odbc-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "console",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "sqlx-mssql-odbc-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "sqlx-mssql-odbc-macros"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "proc-macro2",
  "quote",
