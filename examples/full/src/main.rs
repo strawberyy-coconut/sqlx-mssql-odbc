@@ -47,7 +47,7 @@ use uuid::Uuid;
 /// A record matching the `tests` table created by the migration.
 #[derive(Debug, FromRow)]
 struct TestRecord {
-    id: Option<Uuid>,
+    id: Uuid,
     test_description: Option<String>,
     test_date: DateTime<Utc>,
 }
@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!(
         "✓ query! macro: id={}, desc={:?}, date={:?}",
-        row2.id.unwrap_or_default(), row2.test_description, row2.test_date,
+        row2.id, row2.test_description, row2.test_date,
     );
 
     // ---- 7. query_scalar! macro ------------------------------------------

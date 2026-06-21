@@ -2,7 +2,6 @@
     "rust-analyzer.cargo.features": [
         "bigdecimal",
         "chrono",
-        "time",
         "decimal",
         "json",
         "migrate",

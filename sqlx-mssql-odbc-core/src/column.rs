@@ -7,16 +7,37 @@ pub struct MssqlColumn {
     ordinal: usize,
     name: String,
     type_info: MssqlTypeInfo,
+    /// Column nullability as reported by ODBC.
+    ///
+    /// - `Some(true)` — column is nullable
+    /// - `Some(false)` — column is NOT NULL
+    /// - `None` — nullability is unknown
+    nullable: Option<bool>,
 }
 
 impl MssqlColumn {
     /// Creates column metadata.
-    pub fn new(ordinal: usize, name: impl Into<String>, type_info: MssqlTypeInfo) -> Self {
+    pub fn new(
+        ordinal: usize,
+        name: impl Into<String>,
+        type_info: MssqlTypeInfo,
+        nullable: Option<bool>,
+    ) -> Self {
         Self {
             ordinal,
             name: name.into(),
             type_info,
+            nullable,
         }
+    }
+
+    /// Returns the nullability of this column, as reported by ODBC.
+    ///
+    /// - `Some(true)` — column is nullable
+    /// - `Some(false)` — column is NOT NULL
+    /// - `None` — nullability is unknown
+    pub fn nullable(&self) -> Option<bool> {
+        self.nullable
     }
 }
 

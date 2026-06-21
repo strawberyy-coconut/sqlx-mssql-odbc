@@ -33,8 +33,6 @@ impl sqlx_macros_core::database::DatabaseExt for Mssql {
 ///
 /// # Limitations
 ///
-/// - Nullability is always reported as `None` (ODBC cannot reliably determine
-///   nullability from `SQLDescribeCol` alone).
 /// - Parameter types are not available (only the count is reported).
 #[doc(hidden)]
 pub fn describe_blocking(
@@ -66,6 +64,10 @@ pub fn describe_blocking(
     Ok(Describe {
         columns: statement.columns().to_vec(),
         parameters: Some(Either::Right(parameter_count)),
-        nullable: vec![None; column_count],
+        nullable: statement
+            .columns()
+            .iter()
+            .map(|col| col.nullable())
+            .collect(),
     })
 }

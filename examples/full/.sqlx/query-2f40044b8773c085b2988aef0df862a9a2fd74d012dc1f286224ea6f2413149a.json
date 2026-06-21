@@ -11,7 +11,8 @@
           "sql_data_type": -11,
           "column_size": 36,
           "decimal_digits": 0
-        }
+        },
+        "nullable": false
       },
       {
         "ordinal": 1,
@@ -19,7 +20,8 @@
         "type_info": {
           "type_name": "WVARCHAR",
           "length": null
-        }
+        },
+        "nullable": true
       },
       {
         "ordinal": 2,
@@ -29,16 +31,17 @@
           "sql_data_type": -155,
           "column_size": 34,
           "decimal_digits": 7
-        }
+        },
+        "nullable": false
       }
     ],
     "parameters": {
       "Right": 1
     },
     "nullable": [
-      null,
-      null,
-      null
+      false,
+      true,
+      false
     ]
   },
   "hash": "2f40044b8773c085b2988aef0df862a9a2fd74d012dc1f286224ea6f2413149a"

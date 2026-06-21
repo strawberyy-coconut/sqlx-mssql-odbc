@@ -88,16 +88,19 @@ mod tests {
                     0,
                     "lowercase_col",
                     MssqlTypeInfo::new(odbc_api::DataType::Integer),
+                    None,
                 ),
                 MssqlColumn::new(
                     1,
                     "UPPERCASE_COL",
                     MssqlTypeInfo::new(odbc_api::DataType::Varchar { length: None }),
+                    None,
                 ),
                 MssqlColumn::new(
                     2,
                     "MixedCase_Col",
                     MssqlTypeInfo::new(odbc_api::DataType::Double),
+                    None,
                 ),
             ],
             vec![

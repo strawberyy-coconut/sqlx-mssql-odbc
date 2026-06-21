@@ -1268,10 +1268,17 @@ pub(crate) fn collect_columns(
             .name_to_string()
             .unwrap_or_else(|_| format!("col{ordinal}"));
 
+        let nullable = match description.nullability {
+            odbc_api::Nullability::NoNulls => Some(false),
+            odbc_api::Nullability::Nullable => Some(true),
+            odbc_api::Nullability::Unknown => None,
+        };
+
         columns.push(MssqlColumn::new(
             ordinal,
             name,
             MssqlTypeInfo::new(description.data_type),
+            nullable,
         ));
     }
 
@@ -1474,25 +1481,28 @@ fn build_buffer_bindings(
     collect_columns(cursor).map(|columns| {
         columns
             .into_iter()
-            .map(|column| ColumnBinding {
-                buffer_desc: map_buffer_desc(column.type_info().data_type(), max_column_size),
-                column,
+            .map(|column| {
+                let nullable = column.nullable().unwrap_or(true);
+                ColumnBinding {
+                    buffer_desc: map_buffer_desc(column.type_info().data_type(), max_column_size, nullable),
+                    column,
+                }
             })
             .collect()
     })
 }
 
-fn map_buffer_desc(data_type: DataType, max_column_size: usize) -> BufferDesc {
+fn map_buffer_desc(data_type: DataType, max_column_size: usize, nullable: bool) -> BufferDesc {
     match data_type {
         DataType::TinyInt | DataType::SmallInt | DataType::Integer | DataType::BigInt => {
-            BufferDesc::I64 { nullable: true }
+            BufferDesc::I64 { nullable }
         }
-        DataType::Real => BufferDesc::F32 { nullable: true },
-        DataType::Float { .. } | DataType::Double => BufferDesc::F64 { nullable: true },
-        DataType::Bit => BufferDesc::Bit { nullable: true },
-        DataType::Date => BufferDesc::Date { nullable: true },
-        DataType::Time { .. } => BufferDesc::Time { nullable: true },
-        DataType::Timestamp { .. } => BufferDesc::Timestamp { nullable: true },
+        DataType::Real => BufferDesc::F32 { nullable },
+        DataType::Float { .. } | DataType::Double => BufferDesc::F64 { nullable },
+        DataType::Bit => BufferDesc::Bit { nullable },
+        DataType::Date => BufferDesc::Date { nullable },
+        DataType::Time { .. } => BufferDesc::Time { nullable },
+        DataType::Timestamp { .. } => BufferDesc::Timestamp { nullable },
         DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
             BufferDesc::Binary {
                 max_bytes: max_column_size,
@@ -1867,15 +1877,15 @@ mod tests {
     #[test]
     fn buffered_fetch_maps_numeric_types_to_nullable_64_bit_buffers() {
         assert!(matches!(
-            map_buffer_desc(DataType::TinyInt, 64),
+            map_buffer_desc(DataType::TinyInt, 64, true),
             BufferDesc::I64 { nullable: true }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::Integer, 64),
+            map_buffer_desc(DataType::Integer, 64, true),
             BufferDesc::I64 { nullable: true }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::BigInt, 64),
+            map_buffer_desc(DataType::BigInt, 64, true),
             BufferDesc::I64 { nullable: true }
         ));
     }
@@ -1883,11 +1893,11 @@ mod tests {
     #[test]
     fn buffered_fetch_uses_configured_limits_for_variable_sized_data() {
         assert_eq!(
-            map_buffer_desc(DataType::Varchar { length: None }, 32),
+            map_buffer_desc(DataType::Varchar { length: None }, 32, true),
             BufferDesc::Text { max_str_len: 32 }
         );
         assert_eq!(
-            map_buffer_desc(DataType::Varbinary { length: None }, 16),
+            map_buffer_desc(DataType::Varbinary { length: None }, 16, true),
             BufferDesc::Binary { max_bytes: 16 }
         );
     }
@@ -1895,15 +1905,15 @@ mod tests {
     #[test]
     fn buffered_fetch_maps_wide_char_types_to_wtext() {
         assert!(matches!(
-            map_buffer_desc(DataType::WChar { length: None }, 64),
+            map_buffer_desc(DataType::WChar { length: None }, 64, true),
             BufferDesc::WText { max_str_len: 64 }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::WVarchar { length: None }, 128),
+            map_buffer_desc(DataType::WVarchar { length: None }, 128, true),
             BufferDesc::WText { max_str_len: 128 }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::WLongVarchar { length: None }, 256),
+            map_buffer_desc(DataType::WLongVarchar { length: None }, 256, true),
             BufferDesc::WText { max_str_len: 256 }
         ));
     }
@@ -1911,15 +1921,15 @@ mod tests {
     #[test]
     fn buffered_fetch_maps_narrow_char_types_to_text() {
         assert!(matches!(
-            map_buffer_desc(DataType::Char { length: None }, 64),
+            map_buffer_desc(DataType::Char { length: None }, 64, true),
             BufferDesc::Text { max_str_len: 64 }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::Varchar { length: None }, 64),
+            map_buffer_desc(DataType::Varchar { length: None }, 64, true),
             BufferDesc::Text { max_str_len: 64 }
         ));
         assert!(matches!(
-            map_buffer_desc(DataType::LongVarchar { length: None }, 64),
+            map_buffer_desc(DataType::LongVarchar { length: None }, 64, true),
             BufferDesc::Text { max_str_len: 64 }
         ));
     }
