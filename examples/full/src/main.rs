@@ -49,7 +49,7 @@ use uuid::Uuid;
 struct TestRecord {
     id: Option<Uuid>,
     test_description: Option<String>,
-    test_date: Option<DateTime<Utc>>,
+    test_date: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------

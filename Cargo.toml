@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 members = ["examples/full","sqlx-mssql-odbc-cli","sqlx-mssql-odbc-core", "sqlx-mssql-odbc-macros"]
 
 [features]
-default = []
+default = ["runtime-tokio"]
 # Type/runtime features forwarded to sqlx-mssql-odbc-core
 bigdecimal = ["sqlx-mssql-odbc-core/bigdecimal", "sqlx-mssql-odbc-macros/bigdecimal"]
 chrono = ["sqlx-mssql-odbc-core/chrono", "sqlx-mssql-odbc-macros/chrono"]

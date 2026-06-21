@@ -35,40 +35,40 @@ enum Command {
     },
     Prepare {
         sql: SqlStr,
-        response: tokio::sync::oneshot::Sender<
+        response: flume::Sender<
             std::result::Result<MssqlStatement, sqlx_core::Error>,
         >,
     },
     Ping {
-        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
     },
     Begin {
-        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
     },
     Commit {
-        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
     },
     Rollback {
-        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
     },
     StartRollback,
     ExecSql {
         sql: String,
-        response: tokio::sync::oneshot::Sender<std::result::Result<(), sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
     },
     ScalarI64 {
         sql: String,
         response:
-            tokio::sync::oneshot::Sender<std::result::Result<Option<i64>, sqlx_core::Error>>,
+            flume::Sender<std::result::Result<Option<i64>, sqlx_core::Error>>,
     },
     Shutdown {
-        signal: tokio::sync::oneshot::Sender<()>,
+        signal: flume::Sender<()>,
     },
     /// Returns `Vec<(version, checksum_bytes)>` from the migrations table.
     ListMigrations {
         sql: String,
         response:
-            tokio::sync::oneshot::Sender<std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error>>,
+            flume::Sender<std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error>>,
     },
     /// Applies a migration: starts a transaction, runs SQL, inserts tracking
     /// record, commits. If `no_tx` is true the transaction is skipped.
@@ -78,7 +78,7 @@ enum Command {
         insert_sql: String,
         version: i64,
         no_tx: bool,
-        response: tokio::sync::oneshot::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
     },
     /// Reverts a migration: starts a transaction, runs SQL, deletes tracking
     /// record, commits. If `no_tx` is true the transaction is skipped.
@@ -88,7 +88,7 @@ enum Command {
         delete_sql: String,
         version: i64,
         no_tx: bool,
-        response: tokio::sync::oneshot::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
     },
 }
 
@@ -1163,16 +1163,16 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
 
 async fn send_command_async<T: Send>(
     cmd_tx: &flume::Sender<Command>,
-    make_cmd: impl FnOnce(tokio::sync::oneshot::Sender<T>) -> Command,
+    make_cmd: impl FnOnce(flume::Sender<T>) -> Command,
 ) -> std::result::Result<T, sqlx_core::Error> {
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    let (resp_tx, resp_rx) = flume::bounded(1);
     let cmd = make_cmd(resp_tx);
     cmd_tx.send(cmd).map_err(|_| {
         sqlx_core::Error::Protocol(
             "MSSQL ODBC connection actor has shut down".to_owned(),
         )
     })?;
-    resp_rx.await.map_err(|_| {
+    resp_rx.recv_async().await.map_err(|_| {
         sqlx_core::Error::Protocol(
             "MSSQL ODBC connection actor response channel closed".to_owned(),
         )
@@ -1185,16 +1185,16 @@ async fn send_command_async<T: Send>(
 
 fn send_command_blocking<T: Send>(
     cmd_tx: &flume::Sender<Command>,
-    make_cmd: impl FnOnce(tokio::sync::oneshot::Sender<T>) -> Command,
+    make_cmd: impl FnOnce(flume::Sender<T>) -> Command,
 ) -> std::result::Result<T, sqlx_core::Error> {
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    let (resp_tx, resp_rx) = flume::bounded(1);
     let cmd = make_cmd(resp_tx);
     cmd_tx.send(cmd).map_err(|_| {
         sqlx_core::Error::Protocol(
             "MSSQL ODBC connection actor has shut down".to_owned(),
         )
     })?;
-    resp_rx.blocking_recv().map_err(|_| {
+    resp_rx.recv().map_err(|_| {
         sqlx_core::Error::Protocol(
             "MSSQL ODBC connection actor response channel closed".to_owned(),
         )
@@ -1849,6 +1849,7 @@ fn sql_preview(sql: &str) -> String {
 ///
 /// The closure must satisfy `Send + 'static` so it can be moved across
 /// threads.
+#[cfg(feature = "runtime-tokio")]
 pub(crate) async fn offload_blocking<F, T>(f: F) -> std::result::Result<T, sqlx_core::Error>
 where
     F: FnOnce() -> std::result::Result<T, sqlx_core::Error> + Send + 'static,
