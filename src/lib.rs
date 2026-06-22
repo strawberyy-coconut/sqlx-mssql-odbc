@@ -288,6 +288,26 @@ macro_rules! query {
     });
 }
 
+/// Compile-time checked SQL query (unchecked variant — skips database
+/// verification at compile time).
+///
+/// Like [`query!`] but does not require `DATABASE_URL` or an offline cache.
+/// Column names and types are **not** verified against the database schema;
+/// they are inferred from the query text alone.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_unchecked {
+    ($query:expr) => ({
+        $crate::expand_query!(source = $query, checked = false)
+    });
+    ($query:expr, $($args:tt)*) => ({
+        $crate::expand_query!(source = $query, args = [$($args)*], checked = false)
+    });
+}
+
 /// Compile-time checked SQL query for MSSQL via ODBC, mapping to a named struct.
 ///
 /// Like [`query!`] but deserialises each row into a struct you provide. The
@@ -348,6 +368,25 @@ macro_rules! query_as {
     });
 }
 
+/// Compile-time checked SQL query mapping to a struct (unchecked variant).
+///
+/// Like [`query_as!`] but does **not** verify column names or types against
+/// the database at compile time. Useful for CI/deploy environments that lack
+/// database connectivity.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_as_unchecked {
+    ($out_struct:path, $query:expr) => ({
+        $crate::expand_query!(record = $out_struct, source = $query, checked = false)
+    });
+    ($out_struct:path, $query:expr, $($args:tt)*) => ({
+        $crate::expand_query!(record = $out_struct, source = $query, args = [$($args)*], checked = false)
+    });
+}
+
 /// Compile-time checked SQL query for MSSQL via ODBC, returning a single scalar
 /// value.
 ///
@@ -379,6 +418,23 @@ macro_rules! query_scalar {
     );
 }
 
+/// Compile-time checked SQL query returning a single scalar (unchecked variant).
+///
+/// Like [`query_scalar!`] but skips database verification at compile time.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_scalar_unchecked {
+    ($query:expr) => (
+        $crate::expand_query!(scalar = _, source = $query, checked = false)
+    );
+    ($query:expr, $($args:tt)*) => (
+        $crate::expand_query!(scalar = _, source = $query, args = [$($args)*], checked = false)
+    );
+}
+
 /// Compile-time checked SQL query read from a file at compile time.
 ///
 /// The file path is relative to the crate root. This keeps large queries out
@@ -405,6 +461,24 @@ macro_rules! query_file {
     });
     ($path:literal, $($args:tt)*) => ({
         $crate::expand_query!(source_file = $path, args = [$($args)*])
+    });
+}
+
+/// Compile-time SQL query read from a file (unchecked variant).
+///
+/// Like [`query_file!`] but does **not** verify the query against a live
+/// database or offline cache.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_file_unchecked {
+    ($path:literal) => ({
+        $crate::expand_query!(source_file = $path, checked = false)
+    });
+    ($path:literal, $($args:tt)*) => ({
+        $crate::expand_query!(source_file = $path, args = [$($args)*], checked = false)
     });
 }
 
@@ -442,6 +516,24 @@ macro_rules! query_file_as {
     });
 }
 
+/// Compile-time SQL query read from a file, mapping to a struct (unchecked
+/// variant).
+///
+/// Like [`query_file_as!`] but skips database verification at compile time.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_file_as_unchecked {
+    ($out_struct:path, $path:literal) => ({
+        $crate::expand_query!(record = $out_struct, source_file = $path, checked = false)
+    });
+    ($out_struct:path, $path:literal, $($args:tt)*) => ({
+        $crate::expand_query!(record = $out_struct, source_file = $path, args = [$($args)*], checked = false)
+    });
+}
+
 /// Compile-time checked SQL query read from a file, returning a single scalar.
 ///
 /// Like [`query_file!`] but returns a single value — useful for report
@@ -468,6 +560,25 @@ macro_rules! query_file_scalar {
     );
     ($path:literal, $($args:tt)*) => (
         $crate::expand_query!(scalar = _, source_file = $path, args = [$($args)*])
+    );
+}
+
+/// Compile-time SQL query read from a file, returning a single scalar
+/// (unchecked variant).
+///
+/// Like [`query_file_scalar!`] but skips database verification at compile
+/// time.
+///
+/// Requires the `macros` feature.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! query_file_scalar_unchecked {
+    ($path:literal) => (
+        $crate::expand_query!(scalar = _, source_file = $path, checked = false)
+    );
+    ($path:literal, $($args:tt)*) => (
+        $crate::expand_query!(scalar = _, source_file = $path, args = [$($args)*], checked = false)
     );
 }
 
