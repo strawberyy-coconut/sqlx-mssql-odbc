@@ -1290,21 +1290,7 @@ fn collect_prepared_columns(
 ) -> std::result::Result<Vec<MssqlColumn>, sqlx_core::Error> {
     match collect_columns(prepared) {
         Ok(columns) => Ok(columns),
-        Err(error) => Err(sqlx_core::Error::Protocol(format!(
-            "cannot determine result-column metadata for this query at compile time\n\
-             \n\
-             This is an ODBC / SQL Server limitation — statements that use temporary\n\
-             tables, table variables, or dynamic SQL inside stored procedures cannot\n\
-             have their result columns introspected before execution.\n\
-             \n\
-             Workarounds:\n\
-             - Use `sqlx::query_as::<_, YourStruct>(\"...\")` or `sqlx::query(\"...\")`\n\
-               (runtime-only, no compile-time column checks)\n\
-             - Add `WITH RESULT SETS (...)` to your EXEC statement to declare the\n\
-               expected output columns explicitly\n\
-             \n\
-             Original ODBC error: {error}"
-        )))
+        Err(error) => Err(error),
     }
 }
 
