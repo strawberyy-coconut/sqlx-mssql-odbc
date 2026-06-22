@@ -355,7 +355,7 @@ impl ConnectionActor {
                     ),
                 ))
             })?;
-            let columns = collect_prepared_columns(prepared, parameters)?;
+            let columns = collect_prepared_columns(prepared)?;
             return Ok(MssqlStatement::new(sql, columns, usize::from(parameters)));
         }
 
@@ -377,7 +377,7 @@ impl ConnectionActor {
                 ),
             ))
         })?;
-        let columns = collect_prepared_columns(&mut prepared, parameters)?;
+        let columns = collect_prepared_columns(&mut prepared)?;
         if self.stmt_cache.is_enabled() {
             self.stmt_cache.insert(sql.as_str(), prepared);
         }
@@ -1286,55 +1286,26 @@ pub(crate) fn collect_columns(
 }
 
 fn collect_prepared_columns(
-    prepared: &mut impl PreparedStatementMetadata,
-    parameter_count: u16,
+    prepared: &mut impl ResultSetMetadata,
 ) -> std::result::Result<Vec<MssqlColumn>, sqlx_core::Error> {
     match collect_columns(prepared) {
         Ok(columns) => Ok(columns),
-        Err(error) if parameter_count > 0 => {
-            validate_parameter_metadata(prepared, parameter_count)?;
-            log::debug!("ODBC driver deferred result-column metadata until execution: {error}");
-            Ok(Vec::new())
-        }
-        Err(error) => Err(error),
+        Err(error) => Err(sqlx_core::Error::Protocol(format!(
+            "cannot determine result-column metadata for this query at compile time\n\
+             \n\
+             This is an ODBC / SQL Server limitation — statements that use temporary\n\
+             tables, table variables, or dynamic SQL inside stored procedures cannot\n\
+             have their result columns introspected before execution.\n\
+             \n\
+             Workarounds:\n\
+             - Use `sqlx::query_as::<_, YourStruct>(\"...\")` or `sqlx::query(\"...\")`\n\
+               (runtime-only, no compile-time column checks)\n\
+             - Add `WITH RESULT SETS (...)` to your EXEC statement to declare the\n\
+               expected output columns explicitly\n\
+             \n\
+             Original ODBC error: {error}"
+        )))
     }
-}
-
-trait PreparedStatementMetadata: ResultSetMetadata {
-    fn describe_prepared_parameter(
-        &mut self,
-        index: u16,
-    ) -> std::result::Result<(), odbc_api::Error>;
-}
-
-impl<S> PreparedStatementMetadata for odbc_api::Prepared<S>
-where
-    S: odbc_api::handles::AsStatementRef,
-{
-    fn describe_prepared_parameter(
-        &mut self,
-        index: u16,
-    ) -> std::result::Result<(), odbc_api::Error> {
-        self.describe_param(index).map(|_| ())
-    }
-}
-
-fn validate_parameter_metadata(
-    prepared: &mut impl PreparedStatementMetadata,
-    parameter_count: u16,
-) -> std::result::Result<(), sqlx_core::Error> {
-    for index in 1..=parameter_count {
-        prepared
-            .describe_prepared_parameter(index)
-            .map_err(|error| {
-                crate::error::database_error_with_context(
-                    error,
-                    format!("failed to describe ODBC parameter {index}"),
-                )
-            })?;
-    }
-
-    Ok(())
 }
 
 fn stream_result_sets<C>(
