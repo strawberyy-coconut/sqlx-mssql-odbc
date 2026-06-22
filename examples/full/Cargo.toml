@@ -1,10 +1,10 @@
 [package]
 name = "full"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 
 [dependencies]
-sqlx-mssql-odbc = { path = "../..", version = "0.1.6", features = [
+sqlx-mssql-odbc = { path = "../..", version = "0.1.7", features = [
     "macros",
     "derive",
     "offline",

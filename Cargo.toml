@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-mssql-odbc"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
@@ -43,8 +43,8 @@ derive = ["sqlx-mssql-odbc-macros/derive"]
 
 [dependencies]
 sqlx-core = { version = "0.9.0" }
-sqlx-mssql-odbc-core = { version = "0.1.6", path = "./sqlx-mssql-odbc-core", default-features = false }
-sqlx-mssql-odbc-macros = { version = "0.1.6", path = "./sqlx-mssql-odbc-macros", optional = true }
+sqlx-mssql-odbc-core = { version = "0.1.7", path = "./sqlx-mssql-odbc-core", default-features = false }
+sqlx-mssql-odbc-macros = { version = "0.1.7", path = "./sqlx-mssql-odbc-macros", optional = true }
 
 [dev-dependencies]
 futures-util = "0.3.32"

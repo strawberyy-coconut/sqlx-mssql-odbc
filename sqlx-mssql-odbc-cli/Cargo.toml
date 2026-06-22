@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-mssql-odbc-cli"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/strawberyy-coconut/sqlx-mssql-odbc"
@@ -23,5 +23,5 @@ clap = { version = "4", features = ["derive"] }
 console = "0.15"
 sqlx-cli = "0.9.0"
 sqlx-core = { version = "0.9.0", default-features = false, features = ["any", "migrate"] }
-sqlx-mssql-odbc-core = { version = "0.1.6", path = "../sqlx-mssql-odbc-core", features = ["any", "migrate", "runtime-tokio"] }
+sqlx-mssql-odbc-core = { version = "0.1.7", path = "../sqlx-mssql-odbc-core", features = ["any", "migrate", "runtime-tokio"] }
 tokio = { version = "1.25.0", features = ["rt-multi-thread", "macros"] }
