@@ -1,21 +1,21 @@
 use crate::{
-    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions,
-    MssqlQueryResult, MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
+    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions, MssqlQueryResult,
+    MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
 };
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
-use futures_util::{future, stream, StreamExt};
+use futures_util::{StreamExt, future, stream};
 use odbc_api::buffers::{AnyColumnBufferSlice, BufferDesc, ColumnarDynBuffer, NullableSlice};
 use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetadata};
+use sqlx_core::Either;
 use sqlx_core::column::Column;
 use sqlx_core::common::StatementCache;
 use sqlx_core::executor::{Execute, Executor};
 use sqlx_core::sql_str::SqlStr;
 use sqlx_core::transaction::Transaction;
-use sqlx_core::Either;
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 type PreparedStatement =
     odbc_api::Prepared<odbc_api::handles::StatementConnection<odbc_api::SharedConnection<'static>>>;
@@ -35,9 +35,7 @@ enum Command {
     },
     Prepare {
         sql: SqlStr,
-        response: flume::Sender<
-            std::result::Result<MssqlStatement, sqlx_core::Error>,
-        >,
+        response: flume::Sender<std::result::Result<MssqlStatement, sqlx_core::Error>>,
     },
     Ping {
         response: flume::Sender<std::result::Result<(), sqlx_core::Error>>,
@@ -58,8 +56,7 @@ enum Command {
     },
     ScalarI64 {
         sql: String,
-        response:
-            flume::Sender<std::result::Result<Option<i64>, sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<Option<i64>, sqlx_core::Error>>,
     },
     Shutdown {
         signal: flume::Sender<()>,
@@ -67,8 +64,7 @@ enum Command {
     /// Returns `Vec<(version, checksum_bytes)>` from the migrations table.
     ListMigrations {
         sql: String,
-        response:
-            flume::Sender<std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error>>,
+        response: flume::Sender<std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error>>,
     },
     /// Applies a migration: starts a transaction, runs SQL, inserts tracking
     /// record, commits. If `no_tx` is true the transaction is skipped.
@@ -158,7 +154,12 @@ impl ConnectionActor {
                     no_tx,
                     response,
                 } => {
-                    let _ = response.send(self.handle_apply_migration(&sql, &insert_sql, version, no_tx));
+                    let _ = response.send(self.handle_apply_migration(
+                        &sql,
+                        &insert_sql,
+                        version,
+                        no_tx,
+                    ));
                 }
                 #[cfg(feature = "migrate")]
                 Command::RevertMigration {
@@ -168,7 +169,12 @@ impl ConnectionActor {
                     no_tx,
                     response,
                 } => {
-                    let _ = response.send(self.handle_revert_migration(&sql, &delete_sql, version, no_tx));
+                    let _ = response.send(self.handle_revert_migration(
+                        &sql,
+                        &delete_sql,
+                        version,
+                        no_tx,
+                    ));
                 }
             }
         }
@@ -194,47 +200,37 @@ impl ConnectionActor {
 
         if persistent && has_arguments {
             if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
-                // Execute from cache.
-                let mut conn_guard = self.conn.lock().map_err(|_| {
-                    sqlx_core::Error::Protocol(
-                        "ODBC execute: failed to lock connection".to_owned(),
-                    )
-                })?;
-                let has_cursor = prepared
-                    .execute(parameters.as_slice())
-                    .map_err(|error| {
+                // Execute from cache — scope the execute result so the borrow
+                // on `prepared` is released before we call row_count().
+                {
+                    let conn_guard = self.conn.lock().map_err(|_| {
+                        sqlx_core::Error::Protocol(
+                            "ODBC execute: failed to lock connection".to_owned(),
+                        )
+                    })?;
+                    let opt_cursor = prepared.execute(parameters.as_slice()).map_err(|error| {
                         crate::error::database_error_with_context_lazy(error, || {
                             format!(
                                 "failed to execute cached ODBC statement: `{}`",
                                 sql_preview(sql.as_str())
                             )
                         })
-                    })?
-                    .is_some();
-                drop(conn_guard);
-
-                if has_cursor {
-                    // Re-execute to get the cursor (avoid borrow conflict).
-                    let mut conn_guard = self.conn.lock().map_err(|_| {
-                        sqlx_core::Error::Protocol(
-                            "ODBC execute: failed to lock connection".to_owned(),
-                        )
                     })?;
-                    let cursor = prepared
-                        .execute(parameters.as_slice())
-                        .map_err(|error| {
-                            crate::error::database_error_with_context_lazy(error, || {
-                                format!(
-                                    "failed to execute cached ODBC statement: `{}`",
-                                    sql_preview(sql.as_str())
-                                )
-                            })
-                        })?
-                        .expect("has_cursor was true");
                     drop(conn_guard);
-                    return stream_result_sets(cursor, self.buffer_settings, tx);
+
+                    // Use the cursor directly from the first & only execution.
+                    if let Some(cursor) = opt_cursor {
+                        return stream_result_sets(cursor, self.buffer_settings, tx);
+                    }
+                    // opt_cursor is None → dropped here → borrow on prepared released
                 }
 
+                // Now prepared is free to borrow again for row_count().
+                let conn_guard = self.conn.lock().map_err(|_| {
+                    sqlx_core::Error::Protocol(
+                        "ODBC execute: failed to lock connection".to_owned(),
+                    )
+                })?;
                 let ra = prepared.row_count().map_err(|error| {
                     crate::error::database_error_with_context_lazy(error, || {
                         format!(
@@ -243,40 +239,51 @@ impl ConnectionActor {
                         )
                     })
                 })?;
+                drop(conn_guard);
                 return send_rows_affected(ra, tx);
             } else {
                 // Prepare and cache
                 let mut prepared =
-                    self.conn.clone().into_prepared(sql.as_str()).map_err(|error| {
-                        crate::error::database_error_with_context_lazy(error, || {
-                            format!(
-                                "failed to prepare cached ODBC statement: `{}`",
-                                sql_preview(sql.as_str())
-                            )
-                        })
-                    })?;
+                    self.conn
+                        .clone()
+                        .into_prepared(sql.as_str())
+                        .map_err(|error| {
+                            crate::error::database_error_with_context_lazy(error, || {
+                                format!(
+                                    "failed to prepare cached ODBC statement: `{}`",
+                                    sql_preview(sql.as_str())
+                                )
+                            })
+                        })?;
 
-                let mut conn_guard = self.conn.lock().map_err(|_| {
-                    sqlx_core::Error::Protocol(
-                        "ODBC execute: failed to lock connection".to_owned(),
-                    )
-                })?;
-                let has_cursor = prepared
-                    .execute(parameters.as_slice())
-                    .map_err(|error| {
-                        crate::error::database_error_with_context_lazy(error, || {
-                            format!(
-                                "failed to execute cached ODBC statement: `{}`",
-                                sql_preview(sql.as_str())
-                            )
-                        })
-                    })?
-                    .is_some();
-                drop(conn_guard);
+                // Execute once in a tight scope so the cursor borrow on
+                // `prepared` is released before we cache or call row_count().
+                let has_cursor = {
+                    let conn_guard = self.conn.lock().map_err(|_| {
+                        sqlx_core::Error::Protocol(
+                            "ODBC execute: failed to lock connection".to_owned(),
+                        )
+                    })?;
+                    let opt_cursor = prepared
+                        .execute(parameters.as_slice())
+                        .map_err(|error| {
+                            crate::error::database_error_with_context_lazy(error, || {
+                                format!(
+                                    "failed to execute cached ODBC statement: `{}`",
+                                    sql_preview(sql.as_str())
+                                )
+                            })
+                        })?;
+                    drop(conn_guard);
+                    opt_cursor.is_some()
+                    // opt_cursor dropped — borrow on prepared released
+                };
 
                 if has_cursor {
-                    // Re-execute to get the cursor for streaming.
-                    let mut conn_guard = self.conn.lock().map_err(|_| {
+                    // Cursor case: re-execute (we consumed the cursor above).
+                    // The statement won't be cached from this path since the
+                    // cursor borrows it — caching happens via handle_prepare().
+                    let conn_guard = self.conn.lock().map_err(|_| {
                         sqlx_core::Error::Protocol(
                             "ODBC execute: failed to lock connection".to_owned(),
                         )
@@ -326,7 +333,8 @@ impl ConnectionActor {
                             sql_preview(sql.as_str())
                         )
                     })
-                })? {
+                })?
+            {
                 return stream_result_sets(cursor, self.buffer_settings, tx);
             }
             let rows_affected = statement.row_count().map_err(|error| {
@@ -359,15 +367,19 @@ impl ConnectionActor {
             return Ok(MssqlStatement::new(sql, columns, usize::from(parameters)));
         }
 
-        let mut prepared = self.conn.clone().into_prepared(sql.as_str()).map_err(|error| {
-            sqlx_core::Error::from(crate::error::database_error_with_context(
-                error,
-                format!(
-                    "failed to prepare MSSQL ODBC statement: `{}`",
-                    sql_preview(sql.as_str())
-                ),
-            ))
-        })?;
+        let mut prepared = self
+            .conn
+            .clone()
+            .into_prepared(sql.as_str())
+            .map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!(
+                        "failed to prepare MSSQL ODBC statement: `{}`",
+                        sql_preview(sql.as_str())
+                    ),
+                ))
+            })?;
         let parameters = prepared.num_params().map_err(|error| {
             sqlx_core::Error::from(crate::error::database_error_with_context(
                 error,
@@ -386,9 +398,10 @@ impl ConnectionActor {
     }
 
     fn handle_ping(&mut self) -> std::result::Result<(), sqlx_core::Error> {
-        let mut conn_guard = self.conn.lock().map_err(|_| {
-            sqlx_core::Error::Protocol("failed to lock connection for ping".into())
-        })?;
+        let mut conn_guard = self
+            .conn
+            .lock()
+            .map_err(|_| sqlx_core::Error::Protocol("failed to lock connection for ping".into()))?;
         conn_guard.execute("SELECT 1", (), None).map_err(|error| {
             sqlx_core::Error::from(crate::error::database_error_with_context(
                 error,
@@ -401,9 +414,7 @@ impl ConnectionActor {
     fn handle_begin(&mut self) -> std::result::Result<(), sqlx_core::Error> {
         if self.transaction_depth == 0 {
             let mut conn_guard = self.conn.lock().map_err(|_| {
-                sqlx_core::Error::Protocol(
-                    "MSSQL ODBC begin: failed to lock connection".to_owned(),
-                )
+                sqlx_core::Error::Protocol("MSSQL ODBC begin: failed to lock connection".to_owned())
             })?;
             conn_guard.set_autocommit(false).map_err(|error| {
                 sqlx_core::Error::from(crate::error::database_error_with_context(
@@ -423,9 +434,7 @@ impl ConnectionActor {
                 .map_err(|error| {
                     sqlx_core::Error::from(crate::error::database_error_with_context(
                         error,
-                        format!(
-                            "failed to create save point `{savepoint}` for nested transaction"
-                        ),
+                        format!("failed to create save point `{savepoint}` for nested transaction"),
                     ))
                 })?;
         }
@@ -521,11 +530,7 @@ impl ConnectionActor {
         } else {
             let savepoint = format!("sqlx_sp_{}", self.transaction_depth - 1);
             if let Ok(mut conn_guard) = self.conn.lock() {
-                let _ = conn_guard.execute(
-                    &format!("ROLLBACK TRANSACTION {savepoint}"),
-                    (),
-                    None,
-                );
+                let _ = conn_guard.execute(&format!("ROLLBACK TRANSACTION {savepoint}"), (), None);
             }
             self.transaction_depth -= 1;
         }
@@ -598,9 +603,7 @@ impl ConnectionActor {
                 ))
             })?
             .ok_or_else(|| {
-                sqlx_core::Error::Protocol(
-                    "list_applied_migrations returned no result set".into(),
-                )
+                sqlx_core::Error::Protocol("list_applied_migrations returned no result set".into())
             })?;
 
         let mut migrations = Vec::new();
@@ -811,11 +814,9 @@ impl MssqlConnection {
 
     /// Returns the DBMS name reported by the ODBC driver.
     pub fn dbms_name(&self) -> std::result::Result<String, sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::ExecSql {
-                sql: "SELECT 1 /* dbms_name */".into(),
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::ExecSql {
+            sql: "SELECT 1 /* dbms_name */".into(),
+            response: tx,
         })?;
         Ok("MSSQL via ODBC".to_owned())
     }
@@ -890,11 +891,9 @@ impl MssqlConnection {
     /// Executes a SQL statement directly with no parameters and discards any result set.
     #[cfg(feature = "migrate")]
     pub(crate) fn exec_sql_blocking(&self, sql: &str) -> std::result::Result<(), sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::ExecSql {
-                sql: sql.to_owned(),
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::ExecSql {
+            sql: sql.to_owned(),
+            response: tx,
         })?
     }
 
@@ -904,11 +903,9 @@ impl MssqlConnection {
         &self,
         sql: &str,
     ) -> std::result::Result<Option<i64>, sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::ScalarI64 {
-                sql: sql.to_owned(),
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::ScalarI64 {
+            sql: sql.to_owned(),
+            response: tx,
         })?
     }
 
@@ -918,11 +915,9 @@ impl MssqlConnection {
         &self,
         sql: &str,
     ) -> std::result::Result<Vec<(i64, Vec<u8>)>, sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::ListMigrations {
-                sql: sql.to_owned(),
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::ListMigrations {
+            sql: sql.to_owned(),
+            response: tx,
         })?
     }
 
@@ -935,14 +930,12 @@ impl MssqlConnection {
         version: i64,
         no_tx: bool,
     ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::ApplyMigration {
-                sql: sql.to_owned(),
-                insert_sql: insert_sql.to_owned(),
-                version,
-                no_tx,
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::ApplyMigration {
+            sql: sql.to_owned(),
+            insert_sql: insert_sql.to_owned(),
+            version,
+            no_tx,
+            response: tx,
         })?
     }
 
@@ -955,14 +948,12 @@ impl MssqlConnection {
         version: i64,
         no_tx: bool,
     ) -> std::result::Result<std::time::Duration, sqlx_core::Error> {
-        send_command_blocking(&self.cmd_tx, |tx| {
-            Command::RevertMigration {
-                sql: sql.to_owned(),
-                delete_sql: delete_sql.to_owned(),
-                version,
-                no_tx,
-                response: tx,
-            }
+        send_command_blocking(&self.cmd_tx, |tx| Command::RevertMigration {
+            sql: sql.to_owned(),
+            delete_sql: delete_sql.to_owned(),
+            version,
+            no_tx,
+            response: tx,
         })?
     }
 
@@ -1021,8 +1012,8 @@ impl sqlx_core::connection::Connection for MssqlConnection {
     fn begin(
         &mut self,
     ) -> impl Future<Output = std::result::Result<Transaction<'_, Self::Database>, sqlx_core::Error>>
-           + Send
-           + '_ {
+    + Send
+    + '_ {
         Transaction::begin(self, None)
     }
 
@@ -1078,9 +1069,7 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
         let sql = query.sql();
 
         match arguments {
-            Ok(arguments) => {
-                receiver_to_stream(self.execute_receiver(sql, persistent, arguments))
-            }
+            Ok(arguments) => receiver_to_stream(self.execute_receiver(sql, persistent, arguments)),
             Err(error) => stream::once(future::ready(Err(error))).boxed(),
         }
     }
@@ -1129,7 +1118,10 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
     fn describe<'e>(
         self,
         sql: sqlx_core::sql_str::SqlStr,
-    ) -> BoxFuture<'e, std::result::Result<sqlx_core::describe::Describe<Self::Database>, sqlx_core::Error>>
+    ) -> BoxFuture<
+        'e,
+        std::result::Result<sqlx_core::describe::Describe<Self::Database>, sqlx_core::Error>,
+    >
     where
         'c: 'e,
     {
@@ -1168,14 +1160,10 @@ async fn send_command_async<T: Send>(
     let (resp_tx, resp_rx) = flume::bounded(1);
     let cmd = make_cmd(resp_tx);
     cmd_tx.send(cmd).map_err(|_| {
-        sqlx_core::Error::Protocol(
-            "MSSQL ODBC connection actor has shut down".to_owned(),
-        )
+        sqlx_core::Error::Protocol("MSSQL ODBC connection actor has shut down".to_owned())
     })?;
     resp_rx.recv_async().await.map_err(|_| {
-        sqlx_core::Error::Protocol(
-            "MSSQL ODBC connection actor response channel closed".to_owned(),
-        )
+        sqlx_core::Error::Protocol("MSSQL ODBC connection actor response channel closed".to_owned())
     })
 }
 
@@ -1190,14 +1178,10 @@ fn send_command_blocking<T: Send>(
     let (resp_tx, resp_rx) = flume::bounded(1);
     let cmd = make_cmd(resp_tx);
     cmd_tx.send(cmd).map_err(|_| {
-        sqlx_core::Error::Protocol(
-            "MSSQL ODBC connection actor has shut down".to_owned(),
-        )
+        sqlx_core::Error::Protocol("MSSQL ODBC connection actor has shut down".to_owned())
     })?;
     resp_rx.recv().map_err(|_| {
-        sqlx_core::Error::Protocol(
-            "MSSQL ODBC connection actor response channel closed".to_owned(),
-        )
+        sqlx_core::Error::Protocol("MSSQL ODBC connection actor response channel closed".to_owned())
     })
 }
 
@@ -1205,9 +1189,7 @@ fn send_command_blocking<T: Send>(
 // Helper: convert a flume receiver to a BoxStream
 // ============================================================================
 
-fn receiver_to_stream<'e>(
-    rx: flume::Receiver<ExecuteResult>,
-) -> BoxStream<'e, ExecuteResult> {
+fn receiver_to_stream<'e>(rx: flume::Receiver<ExecuteResult>) -> BoxStream<'e, ExecuteResult> {
     stream::unfold(rx, |rx| async move {
         rx.recv_async().await.ok().map(|item| (item, rx))
     })
@@ -1441,7 +1423,11 @@ fn build_buffer_bindings(
             .map(|column| {
                 let nullable = column.nullable().unwrap_or(true);
                 ColumnBinding {
-                    buffer_desc: map_buffer_desc(column.type_info().data_type(), max_column_size, nullable),
+                    buffer_desc: map_buffer_desc(
+                        column.type_info().data_type(),
+                        max_column_size,
+                        nullable,
+                    ),
                     column,
                 }
             })
@@ -1562,7 +1548,7 @@ fn buffered_column_values(
         BufferDesc::Numeric => {
             return Err(sqlx_core::Error::Protocol(format!(
                 "unsupported ODBC buffer descriptor: {desc:?}"
-            )))
+            )));
         }
     })
 }
@@ -1694,15 +1680,23 @@ fn fetch_value(
             data_type,
             MssqlValueKind::Integer,
         )?,
-        DataType::BigInt => {
-            fetch_nullable(row, column_number, column, data_type, MssqlValueKind::BigInt)?
-        }
+        DataType::BigInt => fetch_nullable(
+            row,
+            column_number,
+            column,
+            data_type,
+            MssqlValueKind::BigInt,
+        )?,
         DataType::Real => {
             fetch_nullable(row, column_number, column, data_type, MssqlValueKind::Real)?
         }
-        DataType::Float { .. } | DataType::Double => {
-            fetch_nullable(row, column_number, column, data_type, MssqlValueKind::Double)?
-        }
+        DataType::Float { .. } | DataType::Double => fetch_nullable(
+            row,
+            column_number,
+            column,
+            data_type,
+            MssqlValueKind::Double,
+        )?,
         DataType::Date => {
             fetch_nullable(row, column_number, column, data_type, MssqlValueKind::Date)?
         }
@@ -1729,7 +1723,8 @@ fn fetch_value(
             }
         }
         DataType::Other {
-            data_type: sql_type, ..
+            data_type: sql_type,
+            ..
         } if sql_type.0 == -11 => {
             // SQL_GUID / UNIQUEIDENTIFIER in MSSQL
             let mut value = Vec::new();
@@ -1890,5 +1885,4 @@ mod tests {
             BufferDesc::Text { max_str_len: 64 }
         ));
     }
-
 }
