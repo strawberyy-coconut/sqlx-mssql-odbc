@@ -47,8 +47,11 @@ use uuid::Uuid;
 /// A record matching the `tests` table created by the migration.
 #[derive(Debug, FromRow)]
 struct TestRecord {
+    #[allow(dead_code)]
     id: Uuid,
+    #[allow(dead_code)]
     test_description: Option<String>,
+    #[allow(dead_code)]
     test_date: DateTime<Utc>,
 }
 

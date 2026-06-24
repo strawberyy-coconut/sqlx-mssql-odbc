@@ -121,7 +121,7 @@ fn integration_connection_string_forms_parse() {
 
 #[test]
 fn connect_and_ping_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_blocking_test_conn("MSSQL blocking connection test")? else {
+    let Some(conn) = get_blocking_test_conn("MSSQL blocking connection test")? else {
         return Ok(());
     };
 

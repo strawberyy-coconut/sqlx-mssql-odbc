@@ -46,13 +46,12 @@ pub fn describe_blocking(
         .map_err(|e| sqlx_core::Error::Configuration(Box::new(e)))?;
 
     // Open a blocking connection.
-    let mut conn = MssqlConnection::connect_blocking(&options)?;
+    let conn = MssqlConnection::connect_blocking(&options)?;
 
     // Prepare the statement to get column metadata and parameter count.
     let sql_str = AssertSqlSafe(query.to_owned()).into_sql_str();
     let statement: MssqlStatement = conn.prepare_blocking(sql_str)?;
 
-    let column_count = statement.columns().len();
     let parameter_count = statement
         .parameters()
         .map(|p| match p {

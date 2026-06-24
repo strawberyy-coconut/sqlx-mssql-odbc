@@ -1,5 +1,5 @@
 use crate::value::MssqlValueRef;
-use crate::{DataTypeExt, Mssql, MssqlArgumentValue, MssqlTypeInfo};
+use crate::{Mssql, MssqlArgumentValue, MssqlTypeInfo};
 use odbc_api::DataType;
 use rust_decimal::Decimal;
 use sqlx_core::decode::Decode;
