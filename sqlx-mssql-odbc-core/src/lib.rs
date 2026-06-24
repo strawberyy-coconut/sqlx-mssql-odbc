@@ -34,9 +34,6 @@
 //! ODBC Driver 17 or 18 for SQL Server. On Windows, the driver manager is built
 //! in, but the Microsoft ODBC Driver for SQL Server still needs to be installed.
 //!
-//! Enable the `vendored-unix-odbc` feature to statically link the unixODBC
-//! driver manager into your application on Linux or macOS.
-//!
 //! Buffered fetching can improve throughput, but long text or binary values may
 //! be truncated when `max_column_size` is set. Use unbuffered mode for values
 //! that may exceed that limit.
