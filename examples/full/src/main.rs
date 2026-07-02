@@ -44,15 +44,15 @@ use uuid::Uuid;
 // Domain types
 // ---------------------------------------------------------------------------
 
-/// A record matching the `tests` table created by the migration.
+/// A record matching the `users` table created by the migration.
 #[derive(Debug, FromRow)]
 struct TestRecord {
     #[allow(dead_code)]
     id: Uuid,
     #[allow(dead_code)]
-    test_description: Option<String>,
+    description: Option<String>,
     #[allow(dead_code)]
-    test_date: DateTime<Utc>,
+    add_date: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let date_1 = chrono::Utc::now();
 
     let result =
-        sqlx::query("INSERT INTO tests (id, test_description, test_date) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO users (id, description, add_date) VALUES (?, ?, ?)")
             .bind(id_1)
             .bind(description_1)
             .bind(date_1)
@@ -96,15 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ---- 5. Query builder — fetch_optional -------------------------------
-    let row = sqlx::query("SELECT id, test_description, test_date FROM tests WHERE id = ?")
+    let row = sqlx::query("SELECT id, description, add_date FROM users WHERE id = ?")
         .bind(id_1)
         .fetch_optional(&pool)
         .await?
         .expect("row should exist after insert");
 
     let fetched_id: Uuid = row.try_get("id")?;
-    let fetched_desc: Option<String> = row.try_get("test_description")?;
-    let fetched_date: Option<DateTime<Utc>> = row.try_get("test_date")?;
+    let fetched_desc: Option<String> = row.try_get("description")?;
+    let fetched_date: Option<DateTime<Utc>> = row.try_get("add_date")?;
     println!(
         "✓ Query builder fetch: id={fetched_id}, desc={fetched_desc:?}, date={fetched_date:?}",
     );
@@ -113,18 +113,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Requires `DATABASE_URL` to be set at compile time.  If it's not set,
     // this will produce a compile error — that is expected.
     let row2 = sqlx_mssql_odbc::query!(
-        "SELECT id, test_description, test_date FROM tests WHERE id = ?",
+        "SELECT id, description, add_date FROM users WHERE id = ?",
         id_1,
     )
     .fetch_one(&pool)
     .await?;
     println!(
         "✓ query! macro: id={}, desc={:?}, date={:?}",
-        row2.id, row2.test_description, row2.test_date,
+        row2.id, row2.description, row2.add_date,
     );
 
     // ---- 7. query_scalar! macro ------------------------------------------
-    let count: Option<i32> = sqlx_mssql_odbc::query_scalar!("SELECT COUNT(*) FROM tests",)
+    let count: Option<i32> = sqlx_mssql_odbc::query_scalar!("SELECT COUNT(*) FROM users",)
         .fetch_one(&pool)
         .await?;
     println!("✓ query_scalar! macro: {} total rows", count.unwrap_or(1));
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- 8. FromRow + query_as! macro ------------------------------------
     let records = sqlx_mssql_odbc::query_as!(
         TestRecord,
-        "SELECT id, test_description, test_date FROM tests ORDER BY test_date",
+        "SELECT id, description, add_date FROM users ORDER BY add_date",
     )
     .fetch_all(&pool)
     .await?;
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let description_2 = "Inserted via query builder, second record";
     let date_2 = chrono::Utc::now().naive_utc();
 
-    sqlx::query("INSERT INTO tests (id, test_description, test_date) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO users (id, description, add_date) VALUES (?, ?, ?)")
         .bind(id_2)
         .bind(description_2)
         .bind(date_2)
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tx = pool.begin().await?;
 
         let tx_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO tests (id, test_description, test_date) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO users (id, description, add_date) VALUES (?, ?, ?)")
             .bind(tx_id)
             .bind("Created inside a transaction")
             .bind(chrono::Utc::now().naive_utc())
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tx = pool.begin().await?;
 
         let rollback_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO tests (id, test_description, test_date) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO users (id, description, add_date) VALUES (?, ?, ?)")
             .bind(rollback_id)
             .bind("This will be rolled back")
             .bind(chrono::Utc::now().naive_utc())
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("✓ Transaction rolled back: {rollback_id}");
 
         // Confirm the rolled-back row is not visible
-        let rolled_back = sqlx::query("SELECT COUNT(*) FROM tests WHERE id = ?")
+        let rolled_back = sqlx::query("SELECT COUNT(*) FROM users WHERE id = ?")
             .bind(rollback_id)
             .fetch_one(&pool)
             .await?;
@@ -197,14 +197,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 12. Fetch all via query builder ---------------------------------
     let all_rows =
-        sqlx::query("SELECT id, test_description, test_date FROM tests ORDER BY test_date")
+        sqlx::query("SELECT id, description, add_date FROM users ORDER BY add_date")
             .fetch_all(&pool)
             .await?;
-    println!("✓ All {} row(s) in the `tests` table:", all_rows.len(),);
+    println!("✓ All {} row(s) in the `users` table:", all_rows.len(),);
     for (i, r) in all_rows.iter().enumerate() {
         let id: Uuid = r.try_get("id")?;
-        let desc: Option<String> = r.try_get("test_description")?;
-        let date: Option<DateTime<Utc>> = r.try_get("test_date")?;
+        let desc: Option<String> = r.try_get("description")?;
+        let date: Option<DateTime<Utc>> = r.try_get("add_date")?;
         println!("   [{i}] {id} | {desc:?} | {date:?}");
     }
 

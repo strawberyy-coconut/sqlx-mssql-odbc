@@ -1,6 +1,6 @@
 -- Add migration script here
-CREATE TABLE tests (
+CREATE TABLE users (
     id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    test_description NVARCHAR(MAX),
-    test_date DATETIMEOFFSET NOT NULL
+    description NVARCHAR(MAX),
+    add_date DATETIMEOFFSET NOT NULL
 )
