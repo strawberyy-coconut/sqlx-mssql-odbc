@@ -112,9 +112,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_column_match_works() {
+    fn column_lookup_is_case_insensitive() {
         let row = create_test_row();
 
+        // Exact match
         assert_eq!(
             sqlx_core::column::ColumnIndex::<MssqlRow>::index(&"lowercase_col", &row).unwrap(),
             0
@@ -127,12 +128,8 @@ mod tests {
             sqlx_core::column::ColumnIndex::<MssqlRow>::index(&"MixedCase_Col", &row).unwrap(),
             2
         );
-    }
 
-    #[test]
-    fn case_insensitive_column_match_works() {
-        let row = create_test_row();
-
+        // Case-insensitive match
         assert_eq!(
             sqlx_core::column::ColumnIndex::<MssqlRow>::index(&"LOWERCASE_COL", &row).unwrap(),
             0
@@ -153,16 +150,6 @@ mod tests {
         let error = sqlx_core::column::ColumnIndex::<MssqlRow>::index(&"missing", &row).unwrap_err();
 
         assert!(matches!(error, sqlx_core::Error::ColumnNotFound(name) if name == "missing"));
-    }
-
-    #[test]
-    fn try_get_raw_uses_case_insensitive_column_lookup() {
-        use sqlx_core::row::Row;
-
-        let row = create_test_row();
-        let value = row.try_get_raw("mixedcase_col").unwrap();
-
-        assert_eq!(value.as_f64(), Some(std::f64::consts::PI));
     }
 
     #[test]

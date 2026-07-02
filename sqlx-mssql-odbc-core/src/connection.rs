@@ -1828,23 +1828,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buffered_fetch_maps_numeric_types_to_nullable_64_bit_buffers() {
-        assert!(matches!(
-            map_buffer_desc(DataType::TinyInt, 64, true),
-            BufferDesc::I64 { nullable: true }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::Integer, 64, true),
-            BufferDesc::I64 { nullable: true }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::BigInt, 64, true),
-            BufferDesc::I64 { nullable: true }
-        ));
-    }
+    fn buffered_fetch_maps_data_types_to_buffer_descriptors() {
+        // Numeric types → I64
+        for dt in [DataType::TinyInt, DataType::Integer, DataType::BigInt] {
+            assert!(matches!(
+                map_buffer_desc(dt, 64, true),
+                BufferDesc::I64 { nullable: true }
+            ));
+        }
 
-    #[test]
-    fn buffered_fetch_uses_configured_limits_for_variable_sized_data() {
+        // Variable-size → configurable limits
         assert_eq!(
             map_buffer_desc(DataType::Varchar { length: None }, 32, true),
             BufferDesc::Text { max_str_len: 32 }
@@ -1853,37 +1846,31 @@ mod tests {
             map_buffer_desc(DataType::Varbinary { length: None }, 16, true),
             BufferDesc::Binary { max_bytes: 16 }
         );
-    }
 
-    #[test]
-    fn buffered_fetch_maps_wide_char_types_to_wtext() {
-        assert!(matches!(
-            map_buffer_desc(DataType::WChar { length: None }, 64, true),
-            BufferDesc::WText { max_str_len: 64 }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::WVarchar { length: None }, 128, true),
-            BufferDesc::WText { max_str_len: 128 }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::WLongVarchar { length: None }, 256, true),
-            BufferDesc::WText { max_str_len: 256 }
-        ));
-    }
+        // Wide-char types → WText
+        for (dt, expected_len) in [
+            (DataType::WChar { length: None }, 64),
+            (DataType::WVarchar { length: None }, 128),
+            (DataType::WLongVarchar { length: None }, 256),
+        ] {
+            assert_eq!(
+                map_buffer_desc(dt, expected_len, true),
+                BufferDesc::WText {
+                    max_str_len: expected_len
+                }
+            );
+        }
 
-    #[test]
-    fn buffered_fetch_maps_narrow_char_types_to_text() {
-        assert!(matches!(
-            map_buffer_desc(DataType::Char { length: None }, 64, true),
-            BufferDesc::Text { max_str_len: 64 }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::Varchar { length: None }, 64, true),
-            BufferDesc::Text { max_str_len: 64 }
-        ));
-        assert!(matches!(
-            map_buffer_desc(DataType::LongVarchar { length: None }, 64, true),
-            BufferDesc::Text { max_str_len: 64 }
-        ));
+        // Narrow-char types → Text
+        for dt in [
+            DataType::Char { length: None },
+            DataType::Varchar { length: None },
+            DataType::LongVarchar { length: None },
+        ] {
+            assert_eq!(
+                map_buffer_desc(dt, 64, true),
+                BufferDesc::Text { max_str_len: 64 }
+            );
+        }
     }
 }

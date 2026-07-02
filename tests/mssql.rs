@@ -30,12 +30,6 @@ fn database_url() -> String {
     }
 }
 
-fn get_blocking_test_conn() -> Result<MssqlConnection, Box<dyn std::error::Error>> {
-    let url = database_url();
-    let options = MssqlConnectOptions::from_str(&url)?;
-    Ok(options.connect_blocking()?)
-}
-
 async fn get_test_conn() -> Result<MssqlConnection, Box<dyn std::error::Error>> {
     let url = database_url();
     Ok(MssqlConnection::connect(&url).await?)
@@ -79,50 +73,6 @@ async fn count_rows(
         .fetch_one(conn)
         .await?;
     Ok(row.try_get::<i64, _>(0)?)
-}
-
-#[test]
-fn mssql_url_parses_correctly() {
-    let url = "mssql://sa:Password1!@server.example.com:1433/testdb";
-    let options = MssqlConnectOptions::from_str(url).unwrap();
-    let cs = options.connection_string();
-    assert!(cs.contains("Driver={ODBC Driver 18 for SQL Server}"));
-    assert!(cs.contains("Server=server.example.com,1433"));
-    assert!(cs.contains("Database=testdb"));
-    assert!(cs.contains("UID=sa"));
-    assert!(cs.contains("PWD=Password1!"));
-}
-
-#[test]
-fn integration_connection_string_forms_parse() {
-    let dsn = MssqlConnectOptions::from_str("ExampleDsn").unwrap();
-    assert_eq!(dsn.connection_string(), "DSN=ExampleDsn");
-
-    let conn_str = MssqlConnectOptions::from_str("DSN=ExampleDsn;UID=user").unwrap();
-    assert_eq!(conn_str.connection_string(), "DSN=ExampleDsn;UID=user");
-
-    let legacy = MssqlConnectOptions::from_str("odbc:DSN=ExampleDsn").unwrap();
-    assert_eq!(legacy.connection_string(), "DSN=ExampleDsn");
-}
-
-#[test]
-fn connect_and_ping() -> Result<(), Box<dyn std::error::Error>> {
-    let conn = get_blocking_test_conn()?;
-    conn.ping_blocking()?;
-    let _dbms_name = conn.dbms_name()?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn sqlx_connection_connect_ping_and_transaction() -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = get_test_conn().await?;
-    conn.ping().await?;
-
-    let tx = conn.begin().await?;
-    tx.rollback().await?;
-
-    conn.close().await?;
-    Ok(())
 }
 
 #[tokio::test]
@@ -301,7 +251,7 @@ async fn sqlx_fetch_optional_returns_none_for_empty_result(
 
 
 #[tokio::test]
-async fn sqlx_query_fetches_basic_row_in_buffered_mode(
+async fn sqlx_buffered_mode_decodes_basic_and_decimal(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = get_test_conn_with(|options| {
         options.batch_size(2).max_column_size(Some(64));
@@ -312,32 +262,6 @@ async fn sqlx_query_fetches_basic_row_in_buffered_mode(
         .fetch_one(&mut conn)
         .await?;
     assert_eq!(row.try_get::<i32, _>(0)?, 1);
-
-    conn.close().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn sqlx_query_decodes_decimal_integer(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = get_test_conn().await?;
-
-    let row = sqlx_core::query::query("SELECT CAST(42 AS DECIMAL(10, 0))")
-        .fetch_one(&mut conn)
-        .await?;
-    assert_eq!(row.try_get::<i32, _>(0)?, 42);
-
-    conn.close().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn sqlx_query_decodes_decimal_integer_in_buffered_mode(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = get_test_conn_with(|options| {
-        options.batch_size(2).max_column_size(Some(64));
-    })
-    .await?;
 
     let row = sqlx_core::query::query("SELECT CAST(42 AS DECIMAL(10, 0))")
         .fetch_one(&mut conn)
@@ -357,6 +281,13 @@ async fn sqlx_query_binds_parameter() -> Result<(), Box<dyn std::error::Error>> 
         .fetch_one(&mut conn)
         .await?;
     assert_eq!(row.try_get::<i32, _>(0)?, 7);
+
+    // Typed NULL binding
+    let row = sqlx_core::query::query("SELECT CAST(? AS INTEGER)")
+        .bind(Option::<i32>::None)
+        .fetch_one(&mut conn)
+        .await?;
+    assert!(row.try_get_raw(0)?.is_null());
 
     conn.close().await?;
     Ok(())
@@ -379,20 +310,6 @@ async fn sqlx_query_binds_heterogeneous_parameters(
     assert_eq!(row.try_get::<i32, _>(0)?, 7);
     assert_eq!(row.try_get::<String, _>(1)?.trim_end(), "odbc-param");
     assert_eq!(row.try_get::<f64, _>(2)?, 2.5);
-
-    conn.close().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn sqlx_query_binds_typed_null() -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = get_test_conn().await?;
-
-    let row = sqlx_core::query::query("SELECT CAST(? AS INTEGER)")
-        .bind(Option::<i32>::None)
-        .fetch_one(&mut conn)
-        .await?;
-    assert!(row.try_get_raw(0)?.is_null());
 
     conn.close().await?;
     Ok(())

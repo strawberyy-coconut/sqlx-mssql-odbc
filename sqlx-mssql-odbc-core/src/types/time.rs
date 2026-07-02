@@ -411,6 +411,16 @@ mod tests {
     fn time_date_type_compatibility() {
         assert!(<TimeDate as Type<Mssql>>::compatible(&MssqlTypeInfo::DATE));
         assert!(<TimeDate as Type<Mssql>>::compatible(&MssqlTypeInfo::varchar(None)));
+        assert_eq!(<TimeDate as Type<Mssql>>::type_info().name(), "DATE");
+        assert_eq!(<TimeTime as Type<Mssql>>::type_info().name(), "TIME");
+        assert_eq!(
+            <PrimitiveDateTime as Type<Mssql>>::type_info().name(),
+            "TIMESTAMP"
+        );
+        assert_eq!(
+            <OffsetDateTime as Type<Mssql>>::type_info().name(),
+            "DATETIMEOFFSET"
+        );
     }
 
     #[test]
@@ -538,17 +548,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn time_type_info_names() {
-        assert_eq!(<TimeDate as Type<Mssql>>::type_info().name(), "DATE");
-        assert_eq!(<TimeTime as Type<Mssql>>::type_info().name(), "TIME");
-        assert_eq!(
-            <PrimitiveDateTime as Type<Mssql>>::type_info().name(),
-            "TIMESTAMP"
-        );
-        assert_eq!(
-            <OffsetDateTime as Type<Mssql>>::type_info().name(),
-            "DATETIMEOFFSET"
-        );
-    }
 }

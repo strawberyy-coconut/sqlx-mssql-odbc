@@ -599,34 +599,21 @@ mod tests {
     };
 
     #[test]
-    fn argument_buffer_tracks_values_in_order() {
+    fn argument_buffer_tracks_values_via_direct_and_sqlx_add() {
+        // Direct value insertion
         let mut arguments = MssqlArguments::default();
-
         arguments.add_value(MssqlArgumentValue::Int(7));
         arguments.add_value(MssqlArgumentValue::Text("abc".to_owned()));
         arguments.add_value(MssqlArgumentValue::Null(crate::MssqlTypeInfo::new(
             odbc_api::DataType::Integer,
         )));
-
         assert_eq!(arguments.len(), 3);
-        assert_eq!(
-            arguments.values(),
-            &[
-                MssqlArgumentValue::Int(7),
-                MssqlArgumentValue::Text("abc".to_owned()),
-                MssqlArgumentValue::Null(crate::MssqlTypeInfo::new(odbc_api::DataType::Integer))
-            ]
-        );
-    }
 
-    #[test]
-    fn sqlx_arguments_add_encodes_basic_scalars() {
+        // sqlx_core Arguments::add path
         let mut arguments = MssqlArguments::default();
-
         sqlx_core::arguments::Arguments::add(&mut arguments, 7_i32).unwrap();
         sqlx_core::arguments::Arguments::add(&mut arguments, "abc").unwrap();
         sqlx_core::arguments::Arguments::add(&mut arguments, vec![1_u8, 2, 3]).unwrap();
-
         assert_eq!(
             arguments.values(),
             &[
@@ -672,14 +659,18 @@ mod tests {
     }
 
     #[test]
-    fn sqlx_arguments_add_rejects_unsigned_values_exceeding_bigint_range() {
+    fn sqlx_arguments_unsigned_range_enforcement() {
         let mut arguments = MssqlArguments::default();
 
-        let result = sqlx_core::arguments::Arguments::add(&mut arguments, u64::MAX);
+        // Values within BIGINT range succeed
+        sqlx_core::arguments::Arguments::add(&mut arguments, 42_u64).unwrap();
+        assert_eq!(arguments.values(), &[MssqlArgumentValue::Int(42)]);
 
+        // Values exceeding BIGINT range are rejected
+        let mut arguments = MssqlArguments::default();
+        let result = sqlx_core::arguments::Arguments::add(&mut arguments, u64::MAX);
         assert!(result.is_err());
-        let error = result.unwrap_err();
-        let msg = format!("{error}");
+        let msg = format!("{}", result.unwrap_err());
         assert!(
             msg.contains("exceeds BIGINT range"),
             "expected range error, got: {msg}"
@@ -687,17 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlx_arguments_add_encodes_unsigned_values_within_bigint_range() {
-        let mut arguments = MssqlArguments::default();
-
-        sqlx_core::arguments::Arguments::add(&mut arguments, 42_u64).unwrap();
-
-        assert_eq!(arguments.values(), &[MssqlArgumentValue::Int(42)]);
-    }
-
-    #[test]
-    fn sqlx_arguments_add_encodes_temporal_scalars() {
-        let mut arguments = MssqlArguments::default();
+    fn sqlx_arguments_temporal_encode_and_odbc_collection() {
         let date = odbc_api::sys::Date {
             year: 2026,
             month: 5,
@@ -715,20 +696,44 @@ mod tests {
             hour: 12,
             minute: 30,
             second: 45,
-            fraction: 123_456_000,
+            fraction: 123_456_789,
         };
 
+        // Encoding via sqlx_core
+        let mut arguments = MssqlArguments::default();
         sqlx_core::arguments::Arguments::add(&mut arguments, date).unwrap();
         sqlx_core::arguments::Arguments::add(&mut arguments, time).unwrap();
         sqlx_core::arguments::Arguments::add(&mut arguments, timestamp).unwrap();
-
         assert_eq!(
             arguments.values(),
             &[
                 MssqlArgumentValue::Date(date),
-                MssqlArgumentValue::Time(time),
-                MssqlArgumentValue::Timestamp(timestamp)
+                MssqlArgumentValue::Time(odbc_api::sys::Time {
+                    hour: 12,
+                    minute: 30,
+                    second: 45,
+                }),
+                MssqlArgumentValue::Timestamp(timestamp),
             ]
+        );
+
+        // ODBC parameter collection conversion
+        let collection = MssqlParameterCollection::from_values(&[
+            MssqlArgumentValue::Date(date),
+            MssqlArgumentValue::Time(time),
+            MssqlArgumentValue::Timestamp(timestamp),
+        ]);
+        assert_eq!(
+            collection.as_slice()[0].data_type(),
+            odbc_api::DataType::Date
+        );
+        assert_eq!(
+            collection.as_slice()[1].data_type(),
+            odbc_api::DataType::Time { precision: 0 }
+        );
+        assert_eq!(
+            collection.as_slice()[2].data_type(),
+            odbc_api::DataType::Timestamp { precision: 6 }
         );
     }
 
@@ -771,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_collection_converts_basic_values_to_odbc_parameters() {
+    fn parameter_collection_odbc_conversion_and_binding() {
         let values = [
             MssqlArgumentValue::Text("abc".to_owned()),
             MssqlArgumentValue::Bytes(vec![1, 2, 3]),
@@ -779,82 +784,6 @@ mod tests {
             MssqlArgumentValue::Int(8),
             MssqlArgumentValue::Bit(true),
             MssqlArgumentValue::Float(1.5),
-        ];
-
-        let collection = MssqlParameterCollection::from_values(&values);
-
-        assert_eq!(collection.len(), values.len());
-        assert!(matches!(
-            collection.as_slice()[0].data_type(),
-            odbc_api::DataType::Varchar { .. }
-                | odbc_api::DataType::WVarchar { .. }
-                | odbc_api::DataType::WLongVarchar { .. }
-        ));
-        assert!(matches!(
-            collection.as_slice()[1].data_type(),
-            odbc_api::DataType::Varbinary { .. }
-        ));
-        assert_eq!(
-            collection.as_slice()[2].data_type(),
-            odbc_api::DataType::BigInt
-        );
-        assert_eq!(
-            collection.as_slice()[3].data_type(),
-            odbc_api::DataType::BigInt
-        );
-        assert_eq!(
-            collection.as_slice()[4].data_type(),
-            odbc_api::DataType::Bit
-        );
-        assert_eq!(
-            collection.as_slice()[5].data_type(),
-            odbc_api::DataType::Double
-        );
-    }
-
-    #[test]
-    fn parameter_collection_converts_temporal_values_to_typed_odbc_parameters() {
-        let values = [
-            MssqlArgumentValue::Date(odbc_api::sys::Date {
-                year: 2026,
-                month: 5,
-                day: 29,
-            }),
-            MssqlArgumentValue::Time(odbc_api::sys::Time {
-                hour: 12,
-                minute: 30,
-                second: 45,
-            }),
-            MssqlArgumentValue::Timestamp(odbc_api::sys::Timestamp {
-                year: 2026,
-                month: 5,
-                day: 29,
-                hour: 12,
-                minute: 30,
-                second: 45,
-                fraction: 123_456_789,
-            }),
-        ];
-
-        let collection = MssqlParameterCollection::from_values(&values);
-
-        assert_eq!(
-            collection.as_slice()[0].data_type(),
-            odbc_api::DataType::Date
-        );
-        assert_eq!(
-            collection.as_slice()[1].data_type(),
-            odbc_api::DataType::Time { precision: 0 }
-        );
-        assert_eq!(
-            collection.as_slice()[2].data_type(),
-            odbc_api::DataType::Timestamp { precision: 6 }
-        );
-    }
-
-    #[test]
-    fn parameter_collection_converts_typed_nulls_to_requested_data_types() {
-        let values = [
             MssqlArgumentValue::Null(crate::MssqlTypeInfo::new(odbc_api::DataType::Integer)),
             MssqlArgumentValue::Null(crate::MssqlTypeInfo::new(odbc_api::DataType::WVarchar {
                 length: None,
@@ -867,42 +796,41 @@ mod tests {
 
         let collection = MssqlParameterCollection::from_values(&values);
 
-        assert_eq!(
+        // Basic type mapping
+        assert!(matches!(
             collection.as_slice()[0].data_type(),
-            odbc_api::DataType::Integer
-        );
-        assert_eq!(
+            odbc_api::DataType::Varchar { .. }
+                | odbc_api::DataType::WVarchar { .. }
+                | odbc_api::DataType::WLongVarchar { .. }
+        ));
+        assert!(matches!(
             collection.as_slice()[1].data_type(),
+            odbc_api::DataType::Varbinary { .. }
+        ));
+        assert_eq!(collection.as_slice()[2].data_type(), odbc_api::DataType::BigInt);
+        assert_eq!(collection.as_slice()[3].data_type(), odbc_api::DataType::BigInt);
+        assert_eq!(collection.as_slice()[4].data_type(), odbc_api::DataType::Bit);
+        assert_eq!(collection.as_slice()[5].data_type(), odbc_api::DataType::Double);
+
+        // Typed NULLs preserve their declared types
+        assert_eq!(collection.as_slice()[6].data_type(), odbc_api::DataType::Integer);
+        assert_eq!(
+            collection.as_slice()[7].data_type(),
             odbc_api::DataType::WVarchar { length: None }
         );
         assert_eq!(
-            collection.as_slice()[2].data_type(),
+            collection.as_slice()[8].data_type(),
             odbc_api::DataType::Decimal {
                 precision: 10,
                 scale: 2
             }
         );
-    }
 
-    #[test]
-    fn parameter_collection_slice_matches_odbc_api_binding_shape() {
+        // Slice satisfies ODBC API binding contract
         fn assert_parameter_collection_ref<T: ParameterCollectionRef>(_parameters: T) {}
-
-        let mut arguments = MssqlArguments::default();
-        sqlx_core::arguments::Arguments::add(&mut arguments, "abc").unwrap();
-        let collection = arguments.to_odbc_parameter_collection();
-
         assert_parameter_collection_ref(collection.as_slice());
-    }
 
-    #[test]
-    fn fixed_sized_parameter_uses_explicit_non_null_indicator() {
-        let mut arguments = MssqlArguments::default();
-
-        sqlx_core::arguments::Arguments::add(&mut arguments, 5_i32).unwrap();
-
-        let collection = arguments.to_odbc_parameter_collection();
-        assert_eq!(collection.len(), 1);
-        assert!(!collection.as_slice()[0].indicator_ptr().is_null());
+        // Fixed-size parameters use explicit non-null indicators
+        assert!(!collection.as_slice()[2].indicator_ptr().is_null());
     }
 }

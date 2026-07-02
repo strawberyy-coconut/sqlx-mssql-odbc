@@ -333,46 +333,46 @@ mod tests {
     }
 
     #[test]
-    fn parses_mssql_url_with_default_port() {
-        let url = "mssql://user:pass@localhost/mydb";
-        let options = MssqlConnectOptions::from_str(url).unwrap();
-        let cs = options.connection_string();
-        assert!(cs.contains("Server=localhost,1433"));
-    }
+    fn parses_mssql_url_variants() {
+        let cases = [
+            // (url, expected_contains, expected_not_contains)
+            (
+                "mssql://user:pass@localhost/mydb",
+                vec!["Server=localhost,1433"],
+                vec![],
+            ),
+            (
+                "mssql://localhost/mydb",
+                vec!["Server=localhost,1433", "Database=mydb"],
+                vec!["UID=", "PWD="],
+            ),
+            (
+                "mssql://localhost/mydb?trust_certificate=true",
+                vec!["TrustServerCertificate=yes"],
+                vec![],
+            ),
+            (
+                "mssql://localhost/mydb?encrypt=true",
+                vec!["Encrypt=yes"],
+                vec![],
+            ),
+            (
+                "mssql://localhost/mydb?driver={ODBC Driver 17 for SQL Server}",
+                vec!["Driver={ODBC Driver 17 for SQL Server}"],
+                vec![],
+            ),
+        ];
 
-    #[test]
-    fn parses_mssql_url_without_credentials() {
-        let url = "mssql://localhost/mydb";
-        let options = MssqlConnectOptions::from_str(url).unwrap();
-        let cs = options.connection_string();
-        assert!(cs.contains("Server=localhost,1433"));
-        assert!(cs.contains("Database=mydb"));
-        assert!(!cs.contains("UID="));
-        assert!(!cs.contains("PWD="));
-    }
-
-    #[test]
-    fn parses_mssql_url_with_trust_certificate() {
-        let url = "mssql://localhost/mydb?trust_certificate=true";
-        let options = MssqlConnectOptions::from_str(url).unwrap();
-        let cs = options.connection_string();
-        assert!(cs.contains("TrustServerCertificate=yes"));
-    }
-
-    #[test]
-    fn parses_mssql_url_with_encrypt() {
-        let url = "mssql://localhost/mydb?encrypt=true";
-        let options = MssqlConnectOptions::from_str(url).unwrap();
-        let cs = options.connection_string();
-        assert!(cs.contains("Encrypt=yes"));
-    }
-
-    #[test]
-    fn parses_mssql_url_with_custom_driver() {
-        let url = "mssql://localhost/mydb?driver={ODBC Driver 17 for SQL Server}";
-        let options = MssqlConnectOptions::from_str(url).unwrap();
-        let cs = options.connection_string();
-        assert!(cs.contains("Driver={ODBC Driver 17 for SQL Server}"));
+        for (url, contains, not_contains) in cases {
+            let options = MssqlConnectOptions::from_str(url).unwrap();
+            let cs = options.connection_string();
+            for expected in contains {
+                assert!(cs.contains(expected), "missing '{expected}' in: {cs}");
+            }
+            for unexpected in not_contains {
+                assert!(!cs.contains(unexpected), "found '{unexpected}' in: {cs}");
+            }
+        }
     }
 
     #[test]
@@ -383,26 +383,20 @@ mod tests {
     }
 
     #[test]
-    fn supports_dsn_format() {
+    fn parses_dsn_and_legacy_odbc_prefix() {
         let options = MssqlConnectOptions::from_str("MyMssqlDSN").unwrap();
         assert_eq!(options.connection_string(), "DSN=MyMssqlDSN");
-    }
 
-    #[test]
-    fn strips_legacy_odbc_prefix() {
         let options = MssqlConnectOptions::from_str("odbc:DSN=Warehouse").unwrap();
         assert_eq!(options.connection_string(), "DSN=Warehouse");
     }
 
     #[test]
-    fn encrypt_method_adds_encrypt() {
+    fn builder_methods_set_connection_string_flags() {
         let mut options = MssqlConnectOptions::from_str("DSN=Test").unwrap();
         options.encrypt(true);
         assert!(options.connection_string().contains("Encrypt=yes"));
-    }
 
-    #[test]
-    fn trust_certificate_method_adds_flag() {
         let mut options = MssqlConnectOptions::from_str("DSN=Test").unwrap();
         options.trust_certificate(true);
         assert!(options.connection_string().contains("TrustServerCertificate=yes"));
@@ -417,14 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn escape_odbc_value_preserves_safe_values() {
+    fn escape_odbc_value_handles_safe_and_special_chars() {
+        // Safe values pass through unchanged
         assert_eq!(escape_odbc_value("simple"), "simple");
         assert_eq!(escape_odbc_value(""), "");
         assert_eq!(escape_odbc_value("abc123"), "abc123");
-    }
 
-    #[test]
-    fn escape_odbc_value_wraps_values_with_special_chars() {
+        // Special characters trigger wrapping
         assert_eq!(escape_odbc_value("pass;word"), "{pass;word}");
         assert_eq!(escape_odbc_value("pass=word"), "{pass=word}");
         assert_eq!(escape_odbc_value("pass{word"), "{pass{word}");

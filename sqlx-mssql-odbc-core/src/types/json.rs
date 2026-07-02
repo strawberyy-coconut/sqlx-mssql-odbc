@@ -74,6 +74,10 @@ mod tests {
         assert!(<Json<JsonValue> as Type<Mssql>>::compatible(
             &MssqlTypeInfo::varbinary(None)
         ));
+        assert_eq!(
+            <Json<JsonValue> as Type<Mssql>>::type_info().name(),
+            "VARCHAR"
+        );
     }
 
     #[test]
@@ -98,14 +102,11 @@ mod tests {
             );
         }
 
-        Ok(())
-    }
-
-    #[test]
-    fn json_value_rejects_invalid_text() {
+        // Invalid JSON is rejected
         let value = MssqlValue::new(MssqlValueKind::Text(r#"{"invalid": json,}"#.to_owned()));
-
         assert!(<JsonValue as Decode<Mssql>>::decode(value.as_ref()).is_err());
+
+        Ok(())
     }
 
     #[test]
@@ -126,11 +127,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn json_type_info_name_matches_old_odbc() {
-        assert_eq!(
-            <Json<JsonValue> as Type<Mssql>>::type_info().name(),
-            "VARCHAR"
-        );
-    }
 }

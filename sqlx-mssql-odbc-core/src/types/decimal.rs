@@ -103,26 +103,21 @@ mod tests {
                 "-123.456",
             ),
             (MssqlValue::new(MssqlValueKind::BigInt(42)), "42"),
+            // European locales may use ',' as decimal separator.
+            (
+                MssqlValue::new(MssqlValueKind::Text("123,456".to_owned())),
+                "123.456",
+            ),
+            (
+                MssqlValue::new(MssqlValueKind::Text("  987,654  ".to_owned())),
+                "987.654",
+            ),
         ] {
             assert_eq!(
                 <Decimal as Decode<Mssql>>::decode(value.as_ref())?,
                 Decimal::from_str(expected)?
             );
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn decimal_decodes_locale_comma_separator() -> Result<(), BoxDynError> {
-        // European locales may use ',' as decimal separator.
-        let value = MssqlValue::new(MssqlValueKind::Text("123,456".to_owned()));
-        let decoded = <Decimal as Decode<Mssql>>::decode(value.as_ref())?;
-        assert_eq!(decoded, Decimal::from_str("123.456")?);
-
-        let value = MssqlValue::new(MssqlValueKind::Text("  987,654  ".to_owned()));
-        let decoded = <Decimal as Decode<Mssql>>::decode(value.as_ref())?;
-        assert_eq!(decoded, Decimal::from_str("987.654")?);
 
         Ok(())
     }

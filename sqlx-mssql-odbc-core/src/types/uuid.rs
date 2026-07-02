@@ -66,12 +66,8 @@ mod tests {
         assert!(<Uuid as Type<Mssql>>::compatible(&MssqlTypeInfo::varbinary(
             None
         )));
-        assert!(!<Uuid as Type<Mssql>>::compatible(&MssqlTypeInfo::INTEGER));
-    }
-
-    #[test]
-    fn uuid_compatible_with_guid_type() {
         assert!(<Uuid as Type<Mssql>>::compatible(&MssqlTypeInfo::guid()));
+        assert!(!<Uuid as Type<Mssql>>::compatible(&MssqlTypeInfo::INTEGER));
     }
 
     #[test]

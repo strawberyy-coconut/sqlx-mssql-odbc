@@ -407,7 +407,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integer_values_convert_to_i64() {
+    fn numeric_values_convert_to_i64_and_f64() {
+        // Integer kinds → i64
         assert_eq!(MssqlValue::new(MssqlValueKind::TinyInt(1)).as_i64(), Some(1));
         assert_eq!(MssqlValue::new(MssqlValueKind::SmallInt(2)).as_i64(), Some(2));
         assert_eq!(MssqlValue::new(MssqlValueKind::Integer(3)).as_i64(), Some(3));
@@ -420,10 +421,8 @@ mod tests {
             MssqlValue::new(MssqlValueKind::Text("42.5".to_owned())).as_i64(),
             None
         );
-    }
 
-    #[test]
-    fn text_numeric_values_convert_to_float() {
+        // Text → f64
         assert_eq!(
             MssqlValue::new(MssqlValueKind::Text("42.5".to_owned())).as_f64(),
             Some(42.5)
@@ -431,17 +430,14 @@ mod tests {
     }
 
     #[test]
-    fn text_and_bytes_borrow_from_value() {
+    fn value_accessors_and_null_check() {
         let text = MssqlValue::new(MssqlValueKind::Text("hello".to_owned()));
         assert_eq!(text.as_str().as_deref(), Some("hello"));
         assert_eq!(text.as_bytes().as_deref(), Some(b"hello".as_slice()));
 
         let bytes = MssqlValue::new(MssqlValueKind::Binary(vec![1, 2, 3]));
         assert_eq!(bytes.as_bytes().as_deref(), Some(&[1, 2, 3][..]));
-    }
 
-    #[test]
-    fn null_reports_null() {
         assert!(MssqlValue::new(MssqlValueKind::Null).is_null());
     }
 
