@@ -69,6 +69,9 @@ ODBC uses two native pieces outside this crate:
 1. **A driver manager** - unixODBC on Linux/macOS (built into Windows).
 2. **The Microsoft ODBC Driver for SQL Server** - version 17 or 18.
 
+Enable the `vendored-unix-odbc` feature to statically link the unixODBC driver
+manager into your application on Linux or macOS.
+
 ### Linux (Debian/Ubuntu)
 
 ```bash
@@ -123,6 +126,7 @@ let row = sqlx_core::query::query("SELECT 1")
 | `derive` | `Encode`, `Decode`, `Type`, `FromRow` derive macros |
 | `runtime-tokio` | Tokio runtime support |
 | `tls-none` | No TLS (default) |
+| `vendored-unix-odbc` | Statically link unixODBC |
 
 ## CLI (`sqlx-mssql`)
 

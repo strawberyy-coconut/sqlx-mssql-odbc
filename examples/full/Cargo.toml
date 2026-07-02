@@ -10,6 +10,7 @@ sqlx-mssql-odbc = { path = "../..", version = "0.1.8", features = [
     "offline",
     "chrono",
     "uuid",
+    "vendored-unix-odbc",
     "migrate",
     "runtime-tokio",
 ] }

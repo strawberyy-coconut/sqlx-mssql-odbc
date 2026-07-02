@@ -11,6 +11,7 @@
         "tls-none",
         "uuid",
         "spatial",
+        "vendored-unix-odbc",
         "macros",
         "derive"
     ]

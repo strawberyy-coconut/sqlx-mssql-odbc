@@ -178,6 +178,9 @@
 //! [repository README](https://github.com/strawberyy-coconut/sqlx-mssql-odbc)
 //! for platform-specific installation instructions.
 //!
+//! Enable the `vendored-unix-odbc` feature to statically link unixODBC into
+//! your application on Linux or macOS.
+//!
 //! # Features
 //!
 //! | Feature | Description |
@@ -195,6 +198,7 @@
 //! | `runtime-tokio` | Tokio runtime support |
 //! | `tls-none` | No TLS (default) |
 //! | `spatial` | [`geo_types`] spatial type support |
+//! | `vendored-unix-odbc` | Statically link unixODBC |
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
