@@ -2842,6 +2842,7 @@ name = "sqlx-mssql-odbc"
 version = "0.1.8"
 dependencies = [
  "futures-util",
+ "sqlx",
  "sqlx-core",
  "sqlx-mssql-odbc-core",
  "sqlx-mssql-odbc-macros",

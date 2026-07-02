@@ -2,12 +2,13 @@ use futures_util::TryStreamExt;
 use sqlx_core::column::Column;
 use sqlx_core::connection::{ConnectOptions, Connection};
 use sqlx_core::executor::Executor;
+use sqlx_core::migrate::{MigrateDatabase, Migrator};
 use sqlx_core::row::Row;
 use sqlx_core::sql_str::AssertSqlSafe;
 use sqlx_core::statement::Statement;
 use sqlx_core::value::ValueRef;
 use sqlx_core::Either;
-use sqlx_mssql_odbc::{MssqlConnectOptions, MssqlConnection, MssqlPoolOptions};
+use sqlx_mssql_odbc::{Mssql, MssqlConnectOptions, MssqlConnection, MssqlPoolOptions};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 static TABLE_ID: AtomicU64 = AtomicU64::new(0);
@@ -16,56 +17,41 @@ const MISSING_TABLE_EXISTS: &str = "SELECT 1 FROM sqlx_missing_fs WHERE path = ?
 const MISSING_TABLE_MODIFIED: &str =
     "SELECT 1 FROM sqlx_missing_fs WHERE last_modified >= ? AND path = ?";
 
-fn database_url(test_name: &str) -> Option<String> {
-    match std::env::var("MSSQL_DATABASE_URL") {
-        Ok(value) if !value.trim().is_empty() => Some(value),
-        _ => {
-            if std::env::var_os("MSSQL_TEST_REQUIRED").is_some() {
-                panic!("{test_name} requires MSSQL_DATABASE_URL, but it is not set");
-            }
-
-            eprintln!("skipping {test_name}: MSSQL_DATABASE_URL is not set");
-            None
-        }
+/// Returns the `DATABASE_URL` embedded at compile time via `env!()`, with
+/// `trust_certificate=true` appended if not already present (needed for
+/// self-signed certificates with ODBC Driver 18 — Encrypt=yes by default).
+fn database_url() -> String {
+    let raw = env!("DATABASE_URL");
+    if raw.contains("trust_certificate=") {
+        raw.into()
+    } else {
+        let separator = if raw.contains('?') { "&" } else { "?" };
+        format!("{raw}{separator}trust_certificate=true")
     }
 }
 
-fn get_blocking_test_conn(
-    test_name: &str,
-) -> Result<Option<MssqlConnection>, Box<dyn std::error::Error>> {
-    let Some(url) = database_url(test_name) else {
-        return Ok(None);
-    };
-
+fn get_blocking_test_conn() -> Result<MssqlConnection, Box<dyn std::error::Error>> {
+    let url = database_url();
     let options = MssqlConnectOptions::from_str(&url)?;
-    Ok(Some(options.connect_blocking()?))
+    Ok(options.connect_blocking()?)
 }
 
-async fn get_test_conn(
-    test_name: &str,
-) -> Result<Option<MssqlConnection>, Box<dyn std::error::Error>> {
-    let Some(url) = database_url(test_name) else {
-        return Ok(None);
-    };
-
-    Ok(Some(MssqlConnection::connect(&url).await?))
+async fn get_test_conn() -> Result<MssqlConnection, Box<dyn std::error::Error>> {
+    let url = database_url();
+    Ok(MssqlConnection::connect(&url).await?)
 }
 
 async fn get_test_conn_with<F>(
-    test_name: &str,
     configure: F,
-) -> Result<Option<MssqlConnection>, Box<dyn std::error::Error>>
+) -> Result<MssqlConnection, Box<dyn std::error::Error>>
 where
     F: FnOnce(&mut MssqlConnectOptions),
 {
-    let Some(url) = database_url(test_name) else {
-        return Ok(None);
-    };
-
+    let url = database_url();
     let mut options = MssqlConnectOptions::from_str(&url)?;
     configure(&mut options);
 
-    Ok(Some(options.connect().await?))
+    Ok(options.connect().await?)
 }
 
 fn test_table_name(prefix: &str) -> String {
@@ -120,24 +106,16 @@ fn integration_connection_string_forms_parse() {
 }
 
 #[test]
-fn connect_and_ping_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(conn) = get_blocking_test_conn("MSSQL blocking connection test")? else {
-        return Ok(());
-    };
-
+fn connect_and_ping() -> Result<(), Box<dyn std::error::Error>> {
+    let conn = get_blocking_test_conn()?;
     conn.ping_blocking()?;
     let _dbms_name = conn.dbms_name()?;
-
     Ok(())
 }
 
 #[tokio::test]
-async fn sqlx_connection_connect_ping_and_transaction_when_configured(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx connection test").await? else {
-        return Ok(());
-    };
-
+async fn sqlx_connection_connect_ping_and_transaction() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
     conn.ping().await?;
 
     let tx = conn.begin().await?;
@@ -148,12 +126,9 @@ async fn sqlx_connection_connect_ping_and_transaction_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_pool_acquires_and_queries_when_configured() -> Result<(), Box<dyn std::error::Error>>
+async fn sqlx_pool_acquires_and_queries() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(url) = database_url("MSSQL pool test") else {
-        return Ok(());
-    };
-
+    let url = database_url();
     let pool = MssqlPoolOptions::new()
         .max_connections(2)
         .connect(&url)
@@ -168,10 +143,8 @@ async fn sqlx_pool_acquires_and_queries_when_configured() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn sqlx_query_fetches_basic_row_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx row fetch test").await? else {
-        return Ok(());
-    };
+async fn sqlx_query_fetches_basic_row() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query("SELECT 1 AS answer")
         .fetch_one(&mut conn)
@@ -186,11 +159,9 @@ async fn sqlx_query_fetches_basic_row_when_configured() -> Result<(), Box<dyn st
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sqlx_runs_independent_connections_in_parallel_when_configured(
+async fn sqlx_runs_independent_connections_in_parallel(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(url) = database_url("MSSQL async parallelism test") else {
-        return Ok(());
-    };
+    let url = database_url();
 
     let mut tasks = Vec::new();
 
@@ -232,11 +203,9 @@ async fn sqlx_runs_independent_connections_in_parallel_when_configured(
 }
 
 #[tokio::test]
-async fn dropping_large_row_stream_keeps_connection_usable_when_configured(
+async fn dropping_large_row_stream_keeps_connection_usable(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL early stream drop test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let table = test_table_name("early_drop");
     drop_table_if_exists(&mut conn, &table).await?;
@@ -274,11 +243,9 @@ async fn dropping_large_row_stream_keeps_connection_usable_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_fetch_many_ends_rows_with_query_result_when_configured(
+async fn sqlx_fetch_many_ends_rows_with_query_result(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx fetch_many result test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let results: Vec<_> = (&mut conn)
         .fetch_many(sqlx_core::query::query("SELECT 1"))
@@ -300,10 +267,8 @@ async fn sqlx_fetch_many_ends_rows_with_query_result_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_streams_multiple_rows_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx multiple rows test").await? else {
-        return Ok(());
-    };
+async fn sqlx_streams_multiple_rows() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
 
     let rows = sqlx_core::query::query("SELECT 1 AS v UNION ALL SELECT 2 UNION ALL SELECT 3")
         .fetch_all(&mut conn)
@@ -320,11 +285,9 @@ async fn sqlx_streams_multiple_rows_when_configured() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn sqlx_fetch_optional_returns_none_for_empty_result_when_configured(
+async fn sqlx_fetch_optional_returns_none_for_empty_result(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx empty result test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query("SELECT 1 WHERE 1 = 0")
         .fetch_optional(&mut conn)
@@ -338,15 +301,12 @@ async fn sqlx_fetch_optional_returns_none_for_empty_result_when_configured(
 
 
 #[tokio::test]
-async fn sqlx_query_fetches_basic_row_in_buffered_mode_when_configured(
+async fn sqlx_query_fetches_basic_row_in_buffered_mode(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn_with("MSSQL SQLx buffered row fetch test", |options| {
+    let mut conn = get_test_conn_with(|options| {
         options.batch_size(2).max_column_size(Some(64));
     })
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     let row = sqlx_core::query::query("SELECT 1")
         .fetch_one(&mut conn)
@@ -358,11 +318,9 @@ async fn sqlx_query_fetches_basic_row_in_buffered_mode_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_query_decodes_decimal_integer_when_configured(
+async fn sqlx_query_decodes_decimal_integer(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx decimal integer decode test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query("SELECT CAST(42 AS DECIMAL(10, 0))")
         .fetch_one(&mut conn)
@@ -374,15 +332,12 @@ async fn sqlx_query_decodes_decimal_integer_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_query_decodes_decimal_integer_in_buffered_mode_when_configured(
+async fn sqlx_query_decodes_decimal_integer_in_buffered_mode(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn_with("MSSQL SQLx buffered decimal decode test", |options| {
+    let mut conn = get_test_conn_with(|options| {
         options.batch_size(2).max_column_size(Some(64));
     })
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     let row = sqlx_core::query::query("SELECT CAST(42 AS DECIMAL(10, 0))")
         .fetch_one(&mut conn)
@@ -394,10 +349,8 @@ async fn sqlx_query_decodes_decimal_integer_in_buffered_mode_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_query_binds_parameter_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx parameter binding test").await? else {
-        return Ok(());
-    };
+async fn sqlx_query_binds_parameter() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query("SELECT CAST(? AS INTEGER)")
         .bind(7_i32)
@@ -410,12 +363,9 @@ async fn sqlx_query_binds_parameter_when_configured() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn sqlx_query_binds_heterogeneous_parameters_when_configured(
+async fn sqlx_query_binds_heterogeneous_parameters(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx heterogeneous parameter binding test").await?
-    else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query(
         "SELECT CAST(? AS INTEGER), CAST(? AS VARCHAR(32)), CAST(? AS DOUBLE PRECISION)",
@@ -435,10 +385,8 @@ async fn sqlx_query_binds_heterogeneous_parameters_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_query_binds_typed_null_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx typed null binding test").await? else {
-        return Ok(());
-    };
+async fn sqlx_query_binds_typed_null() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
 
     let row = sqlx_core::query::query("SELECT CAST(? AS INTEGER)")
         .bind(Option::<i32>::None)
@@ -451,11 +399,9 @@ async fn sqlx_query_binds_typed_null_when_configured() -> Result<(), Box<dyn std
 }
 
 #[tokio::test]
-async fn sqlx_execute_reports_rows_affected_when_configured(
+async fn sqlx_execute_reports_rows_affected(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx rows affected test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let table = test_table_name("rows_affected");
     drop_table_if_exists(&mut conn, &table).await?;
@@ -493,11 +439,9 @@ async fn sqlx_execute_reports_rows_affected_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_transactions_commit_and_rollback_data_when_configured(
+async fn sqlx_transactions_commit_and_rollback_data(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx transaction data test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let table = test_table_name("transactions");
     drop_table_if_exists(&mut conn, &table).await?;
@@ -529,11 +473,9 @@ async fn sqlx_transactions_commit_and_rollback_data_when_configured(
 }
 
 #[tokio::test]
-async fn dropped_transaction_rolls_back_when_configured() -> Result<(), Box<dyn std::error::Error>>
+async fn dropped_transaction_rolls_back() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(mut conn) = get_test_conn("MSSQL dropped transaction rollback test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let table = test_table_name("dropped_tx");
     drop_table_if_exists(&mut conn, &table).await?;
@@ -559,11 +501,9 @@ async fn dropped_transaction_rolls_back_when_configured() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn sqlx_prepare_reports_basic_metadata_when_configured(
+async fn sqlx_prepare_reports_basic_metadata(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL SQLx prepare metadata test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let statement = (&mut conn)
         .prepare(sqlx_core::sql_str::SqlStr::from_static(
@@ -587,11 +527,9 @@ async fn sqlx_prepare_reports_basic_metadata_when_configured(
 }
 
 #[tokio::test]
-async fn sqlx_prepare_then_statement_query_when_configured(
+async fn sqlx_prepare_then_statement_query(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL statement query test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let statement = (&mut conn)
         .prepare(sqlx_core::sql_str::SqlStr::from_static(
@@ -612,10 +550,8 @@ async fn sqlx_prepare_then_statement_query_when_configured(
 }
 
 #[tokio::test]
-async fn wrong_parameter_count_errors_when_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL wrong parameter count test").await? else {
-        return Ok(());
-    };
+async fn wrong_parameter_count_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
 
     let error = sqlx_core::query::query("SELECT ? AS value")
         .fetch_one(&mut conn)
@@ -636,15 +572,12 @@ async fn wrong_parameter_count_errors_when_configured() -> Result<(), Box<dyn st
 }
 
 #[tokio::test]
-async fn statement_cache_is_bounded_and_clearable_when_configured(
+async fn statement_cache_is_bounded_and_clearable(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn_with("MSSQL statement cache test", |options| {
+    let mut conn = get_test_conn_with(|options| {
         options.statement_cache_capacity(1);
     })
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     (&mut conn)
         .prepare(sqlx_core::sql_str::SqlStr::from_static("SELECT 1"))
@@ -664,11 +597,9 @@ async fn statement_cache_is_bounded_and_clearable_when_configured(
 }
 
 #[tokio::test]
-async fn prepare_missing_table_does_not_return_empty_metadata_when_configured(
+async fn prepare_missing_table_does_not_return_empty_metadata(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL missing-table prepare metadata test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     for sql in [
         MISSING_TABLE_READ,
@@ -691,11 +622,9 @@ async fn prepare_missing_table_does_not_return_empty_metadata_when_configured(
 }
 
 #[tokio::test]
-async fn failed_metadata_prepare_does_not_poison_later_execute_when_configured(
+async fn failed_metadata_prepare_does_not_poison_later_execute(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL failed metadata prepare recovery test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let _ = (&mut conn)
         .prepare(sqlx_core::sql_str::SqlStr::from_static(MISSING_TABLE_READ))
@@ -718,11 +647,9 @@ async fn failed_metadata_prepare_does_not_poison_later_execute_when_configured(
 }
 
 #[tokio::test]
-async fn invalid_query_errors_are_reported_as_database_errors_when_configured(
+async fn invalid_query_errors_are_reported_as_database_errors(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(mut conn) = get_test_conn("MSSQL invalid query error test").await? else {
-        return Ok(());
-    };
+    let mut conn = get_test_conn().await?;
 
     let error = sqlx_core::query::query("SELECT * FROM sqlx_missing_fs")
         .fetch_optional(&mut conn)
@@ -746,6 +673,179 @@ async fn invalid_query_errors_are_reported_as_database_errors_when_configured(
     );
 
     conn.close().await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Full integration tests: migrations + compile-time checked queries
+// ---------------------------------------------------------------------------
+// These tests require `DATABASE_URL` to be set at compile time (embedded via
+// `env!()`).  In the dev container this is always available — see `.dev.env`.
+// They also require the `macros`, `migrate`, `derive` and `offline` features.
+// ---------------------------------------------------------------------------
+
+/// Creates a unique test database, runs migrations, exercises compile-time
+/// checked macros (`query!`, `query_scalar!`) and runtime CRUD, then cleans
+/// up.
+#[tokio::test]
+async fn integration_migration_and_compile_time_queries(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_url = env!("DATABASE_URL");
+
+    // Build a unique test-database URL by swapping the database component.
+    let test_db_name = format!(
+        "sqlx_mssql_it_{}_{}",
+        std::process::id(),
+        TABLE_ID.fetch_add(1, Ordering::Relaxed),
+    );
+    let test_db_url = db_url.replace("/master?", &format!("/{test_db_name}?"));
+
+    // ---- 1. Create the test database ------------------------------------
+    Mssql::create_database(&test_db_url).await?;
+
+    // Use a block so we can clean up the DB even if the test panics.
+    let result = async {
+        // ---- 2. Connect and run migrations ------------------------------
+        let pool = MssqlPoolOptions::new()
+            .connect(&test_db_url)
+            .await?;
+
+        let migrator = Migrator::new(std::path::Path::new("./tests/migrations")).await?;
+        migrator.run(&pool).await?;
+        println!("✓ Migrations applied to {test_db_name}");
+
+        // ---- 3. Compile-time checked query: simple projection -----------
+        let row = sqlx_mssql_odbc::query!("SELECT 1 AS value")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(row.value, 1);
+        println!("✓ query! macro: SELECT 1 AS value");
+
+        // ---- 4. Compile-time checked query: parameter binding -----------
+        let row = sqlx_mssql_odbc::query!("SELECT CAST(? AS INTEGER) AS num", 42_i32)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(row.num, Some(42));
+        println!("✓ query! macro: parameter binding");
+
+        // ---- 5. Compile-time checked scalar query -----------------------
+        let val: i32 = sqlx_mssql_odbc::query_scalar!("SELECT 99")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(val, 99);
+        println!("✓ query_scalar! macro");
+
+        // ---- 6. Insert data (runtime query) into migrated table ---------
+        sqlx_core::query::query(
+            "INSERT INTO test_items (id, name, value) VALUES (?, ?, ?)",
+        )
+        .bind(1_i32)
+        .bind("item-1")
+        .bind(Some("value-1"))
+        .execute(&pool)
+        .await?;
+
+        sqlx_core::query::query(
+            "INSERT INTO test_items (id, name, value) VALUES (?, ?, ?)",
+        )
+        .bind(2_i32)
+        .bind("item-2")
+        .bind(Option::<&str>::None)
+        .execute(&pool)
+        .await?;
+        println!("✓ Runtime inserts into test_items");
+
+        // ---- 7. Fetch from migrated table (runtime query) ---------------
+        let row = sqlx_core::query::query(
+            "SELECT id, name, value FROM test_items WHERE id = ?",
+        )
+        .bind(1_i32)
+        .fetch_one(&pool)
+        .await?;
+
+        assert_eq!(row.try_get::<i32, _>("id")?, 1);
+        assert_eq!(row.try_get::<String, _>("name")?.trim_end(), "item-1");
+        assert_eq!(
+            row.try_get::<Option<String>, _>("value")?,
+            Some("value-1".to_string()),
+        );
+        println!("✓ Runtime fetch from test_items");
+
+        // ---- 8. Transaction on migrated table ---------------------------
+        {
+            let mut tx = pool.begin().await?;
+            sqlx_core::query::query(
+                "INSERT INTO test_items (id, name, value) VALUES (?, ?, ?)",
+            )
+            .bind(3_i32)
+            .bind("tx-item")
+            .bind(Some("committed"))
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+        {
+            let mut tx = pool.begin().await?;
+            sqlx_core::query::query(
+                "INSERT INTO test_items (id, name, value) VALUES (?, ?, ?)",
+            )
+            .bind(4_i32)
+            .bind("rolled-back-item")
+            .bind(Some("gone"))
+            .execute(&mut *tx)
+            .await?;
+            tx.rollback().await?;
+        }
+
+        let count: i64 = sqlx_core::query::query("SELECT COUNT(*) FROM test_items")
+            .fetch_one(&pool)
+            .await?
+            .try_get(0)?;
+        assert_eq!(count, 3, "rolled-back row should not be visible");
+        println!("✓ Transactions on migrated table");
+
+        // ---- 9. Compile-time query_scalar! against migrated table --------
+        // This uses `query_scalar!` which needs the table to exist in the
+        // DATABASE_URL database at compile time. Since DATABASE_URL points
+        // to `master` which doesn't have test_items, we use a runtime query
+        // instead for queries referencing the migrated table.
+        let item_count: i64 = sqlx_core::query::query("SELECT COUNT(*) FROM test_items")
+            .fetch_one(&pool)
+            .await?
+            .try_get(0)?;
+        assert_eq!(item_count, 3);
+        println!("✓ Runtime COUNT query on migrated table");
+
+        // ---- 10. FromRow derive + runtime query_as -----------------------
+        #[derive(Debug, sqlx_mssql_odbc::FromRow)]
+        struct TestItem {
+            id: i32,
+            name: String,
+            value: Option<String>,
+        }
+
+        let items = sqlx::query_as::<_, TestItem>(
+            "SELECT id, name, value FROM test_items ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, 1);
+        assert_eq!(items[0].name.trim_end(), "item-1");
+        assert_eq!(items[2].name.trim_end(), "tx-item");
+        println!("✓ Runtime query_as + FromRow derive macro");
+
+        pool.close().await;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    // ---- 11. Clean up: drop the test database ---------------------------
+    if let Err(e) = Mssql::drop_database(&test_db_url).await {
+        eprintln!("Warning: failed to drop test database {test_db_name}: {e}");
+    }
+
+    result?;
     Ok(())
 }
 
