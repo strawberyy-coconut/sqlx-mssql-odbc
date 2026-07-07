@@ -257,15 +257,19 @@ impl ConnectionActor {
                             })
                         })?;
 
-                // Execute once in a tight scope so the cursor borrow on
-                // `prepared` is released before we cache or call row_count().
-                let has_cursor = {
+                // Execute once. If the statement returns a cursor, use it
+                // directly — do NOT re-execute (that would double-run
+                // INSERT/UPDATE/DELETE with OUTPUT, causing incorrect
+                // duplicate-key violations on otherwise-empty tables).
+                // Use `match` (not `if let`) so the borrow on `prepared` is
+                // released in the `None` arm before we access `prepared` again.
+                match {
                     let conn_guard = self.conn.lock().map_err(|_| {
                         sqlx_core::Error::Protocol(
                             "ODBC execute: failed to lock connection".to_owned(),
                         )
                     })?;
-                    let opt_cursor = prepared.execute(parameters.as_slice()).map_err(|error| {
+                    let result = prepared.execute(parameters.as_slice()).map_err(|error| {
                         crate::error::database_error_with_context_lazy(error, || {
                             format!(
                                 "failed to execute cached ODBC statement: `{}`",
@@ -274,32 +278,14 @@ impl ConnectionActor {
                         })
                     })?;
                     drop(conn_guard);
-                    opt_cursor.is_some()
-                    // opt_cursor dropped — borrow on prepared released
-                };
-
-                if has_cursor {
-                    // Cursor case: re-execute (we consumed the cursor above).
-                    // The statement won't be cached from this path since the
-                    // cursor borrows it — caching happens via handle_prepare().
-                    let conn_guard = self.conn.lock().map_err(|_| {
-                        sqlx_core::Error::Protocol(
-                            "ODBC execute: failed to lock connection".to_owned(),
-                        )
-                    })?;
-                    let cursor = prepared
-                        .execute(parameters.as_slice())
-                        .map_err(|error| {
-                            crate::error::database_error_with_context_lazy(error, || {
-                                format!(
-                                    "failed to execute cached ODBC statement: `{}`",
-                                    sql_preview(sql.as_str())
-                                )
-                            })
-                        })?
-                        .expect("has_cursor was true");
-                    drop(conn_guard);
-                    return stream_result_sets(cursor, self.buffer_settings, tx);
+                    result
+                } {
+                    Some(cursor) => {
+                        // The statement won't be cached from this path since the
+                        // cursor borrows it — caching happens via handle_prepare().
+                        return stream_result_sets(cursor, self.buffer_settings, tx);
+                    }
+                    None => {} // borrow on `prepared` released here
                 }
 
                 let ra = prepared.row_count().map_err(|error| {
