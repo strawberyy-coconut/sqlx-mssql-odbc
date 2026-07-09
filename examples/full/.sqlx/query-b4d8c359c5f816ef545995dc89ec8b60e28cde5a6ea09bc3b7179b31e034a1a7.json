@@ -35,9 +35,7 @@
         "nullable": false
       }
     ],
-    "parameters": {
-      "Right": 0
-    },
+    "parameters": null,
     "nullable": [
       false,
       true,

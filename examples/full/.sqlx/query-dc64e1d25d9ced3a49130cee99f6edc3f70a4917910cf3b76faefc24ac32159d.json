@@ -12,9 +12,7 @@
         "nullable": true
       }
     ],
-    "parameters": {
-      "Right": 0
-    },
+    "parameters": null,
     "nullable": [
       true
     ]

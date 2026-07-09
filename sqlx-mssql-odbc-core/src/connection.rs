@@ -338,18 +338,45 @@ impl ConnectionActor {
         &mut self,
         sql: SqlStr,
     ) -> std::result::Result<MssqlStatement, sqlx_core::Error> {
-        if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
-            let parameters = prepared.num_params().map_err(|error| {
-                sqlx_core::Error::from(crate::error::database_error_with_context(
+        // Helper to collect parameters
+        fn collect_param_types(
+            prepared: &mut PreparedStatement,
+        ) -> std::result::Result<
+            Option<sqlx_core::Either<Vec<MssqlTypeInfo>, usize>>,
+            sqlx_core::Error,
+        > {
+            let count = prepared.num_params().map_err(|error| {
+                crate::error::database_error_with_context(
                     error,
-                    format!(
-                        "failed to read ODBC parameter metadata for cached statement: `{}`",
-                        sql_preview(sql.as_str())
-                    ),
-                ))
+                    "failed to read ODBC parameter count",
+                )
             })?;
+
+            if count == 0 {
+                return Ok(None);
+            }
+
+            let mut types = Vec::with_capacity(count as usize);
+            for i in 1..=count {
+                match prepared.describe_param(i) {
+                    Ok(column_type) => {
+                        types.push(MssqlTypeInfo::new(column_type.data_type));
+                    }
+                    Err(_) => {
+                        // If describe_param fails for any parameter,
+                        // fall back to count-only mode
+                        return Ok(Some(sqlx_core::Either::Right(count as usize)));
+                    }
+                }
+            }
+
+            Ok(Some(sqlx_core::Either::Left(types)))
+        }
+
+        if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
+            let parameters = collect_param_types(prepared)?;
             let columns = collect_prepared_columns(prepared)?;
-            return Ok(MssqlStatement::new(sql, columns, usize::from(parameters)));
+            return Ok(MssqlStatement::new(sql, columns, parameters));
         }
 
         let mut prepared = self
@@ -365,21 +392,15 @@ impl ConnectionActor {
                     ),
                 ))
             })?;
-        let parameters = prepared.num_params().map_err(|error| {
-            sqlx_core::Error::from(crate::error::database_error_with_context(
-                error,
-                format!(
-                    "failed to read ODBC parameter metadata for prepared statement: `{}`",
-                    sql_preview(sql.as_str())
-                ),
-            ))
-        })?;
+
+        let parameters = collect_param_types(&mut prepared)?;
         let columns = collect_prepared_columns(&mut prepared)?;
+
         if self.stmt_cache.is_enabled() {
             self.stmt_cache.insert(sql.as_str(), prepared);
         }
 
-        Ok(MssqlStatement::new(sql, columns, usize::from(parameters)))
+        Ok(MssqlStatement::new(sql, columns, parameters))
     }
 
     fn handle_ping(&mut self) -> std::result::Result<(), sqlx_core::Error> {
@@ -507,7 +528,7 @@ impl ConnectionActor {
         }
 
         if self.transaction_depth == 1 {
-            if let Ok( conn_guard) = self.conn.lock() {
+            if let Ok(conn_guard) = self.conn.lock() {
                 let _ = conn_guard.rollback();
                 let _ = conn_guard.set_autocommit(true);
             }

@@ -3,10 +3,10 @@
 //! Only available with the `offline` feature.
 
 use crate::{Mssql, MssqlConnectOptions, MssqlConnection, MssqlStatement};
+use crate::statement::clone_param_info;
 use sqlx_core::describe::Describe;
 use sqlx_core::sql_str::{AssertSqlSafe, SqlSafeStr};
 use sqlx_core::statement::Statement as _;
-use sqlx_core::Either;
 
 /// Compile-time query descriptor plugged into [`sqlx_macros_core`].
 #[doc(hidden)]
@@ -28,41 +28,26 @@ impl sqlx_macros_core::database::DatabaseExt for Mssql {
 
 /// Connects to an MSSQL database via ODBC at compile time and describes a SQL query.
 ///
-/// Returns column metadata, parameter count, and nullability information.
+/// Returns column metadata, parameter types (when available), and nullability information.
 /// This function is `#[doc(hidden)]` — it is only used by the proc macros.
-///
-/// # Limitations
-///
-/// - Parameter types are not available (only the count is reported).
 #[doc(hidden)]
 pub fn describe_blocking(
     query: &str,
     database_url: &str,
     _driver_config: &sqlx_core::config::drivers::Config,
 ) -> Result<Describe<Mssql>, sqlx_core::Error> {
-    // Parse the database URL into connection options.
     let options: MssqlConnectOptions = database_url
         .parse()
         .map_err(|e| sqlx_core::Error::Configuration(Box::new(e)))?;
 
-    // Open a blocking connection.
     let conn = MssqlConnection::connect_blocking(&options)?;
 
-    // Prepare the statement to get column metadata and parameter count.
     let sql_str = AssertSqlSafe(query.to_owned()).into_sql_str();
     let statement: MssqlStatement = conn.prepare_blocking(sql_str)?;
 
-    let parameter_count = statement
-        .parameters()
-        .map(|p| match p {
-            Either::Left(types) => types.len(),
-            Either::Right(count) => count,
-        })
-        .unwrap_or(0);
-
     Ok(Describe {
         columns: statement.columns().to_vec(),
-        parameters: Some(Either::Right(parameter_count)),
+        parameters: clone_param_info(statement.parameters()),
         nullable: statement
             .columns()
             .iter()

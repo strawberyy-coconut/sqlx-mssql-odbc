@@ -36,7 +36,14 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Left": [
+        {
+          "type_name": "UNIQUEIDENTIFIER",
+          "sql_data_type": -11,
+          "column_size": 36,
+          "decimal_digits": 0
+        }
+      ]
     },
     "nullable": [
       false,

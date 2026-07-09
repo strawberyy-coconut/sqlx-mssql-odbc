@@ -1,17 +1,40 @@
 use crate::{Mssql, MssqlArguments, MssqlColumn, MssqlTypeInfo};
 use sqlx_core::sql_str::SqlStr;
 
+pub(crate) type ParamInfo = Option<sqlx_core::Either<Vec<MssqlTypeInfo>, usize>>;
+
+/// Borrows `ParamInfo` into the form returned by [`Statement::parameters`].
+pub(crate) fn borrow_param_info(
+    info: &ParamInfo,
+) -> Option<sqlx_core::Either<&[MssqlTypeInfo], usize>> {
+    info.as_ref().map(|p| match p {
+        sqlx_core::Either::Left(types) => sqlx_core::Either::Left(types.as_slice()),
+        sqlx_core::Either::Right(count) => sqlx_core::Either::Right(*count),
+    })
+}
+
+/// Converts the borrowed form back into owned `ParamInfo` for [`Describe`].
+#[cfg(feature = "offline")]
+pub(crate) fn clone_param_info(
+    info: Option<sqlx_core::Either<&[MssqlTypeInfo], usize>>,
+) -> ParamInfo {
+    info.map(|p| match p {
+        sqlx_core::Either::Left(types) => sqlx_core::Either::Left(types.to_vec()),
+        sqlx_core::Either::Right(count) => sqlx_core::Either::Right(count),
+    })
+}
+
 /// Prepared statement metadata for MSSQL via ODBC.
 #[derive(Debug, Clone)]
 pub struct MssqlStatement {
     sql: SqlStr,
     columns: Vec<MssqlColumn>,
-    parameters: usize,
+    parameters: ParamInfo,
 }
 
 impl MssqlStatement {
     /// Creates a statement metadata value.
-    pub fn new(sql: SqlStr, columns: Vec<MssqlColumn>, parameters: usize) -> Self {
+    pub fn new(sql: SqlStr, columns: Vec<MssqlColumn>, parameters: ParamInfo) -> Self {
         Self {
             sql,
             columns,
@@ -32,7 +55,7 @@ impl sqlx_core::statement::Statement for MssqlStatement {
     }
 
     fn parameters(&self) -> Option<sqlx_core::Either<&[MssqlTypeInfo], usize>> {
-        Some(sqlx_core::Either::Right(self.parameters))
+        borrow_param_info(&self.parameters)
     }
 
     fn columns(&self) -> &[MssqlColumn] {
