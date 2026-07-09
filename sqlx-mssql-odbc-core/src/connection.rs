@@ -1,35 +1,29 @@
-mod command;
 mod actor;
+mod command;
 mod helpers;
 
 use crate::connection::helpers::{receiver_to_stream, send_command_async, send_command_blocking};
 use crate::{
     MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions, MssqlQueryResult,
-    MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
+    MssqlRow, MssqlStatement, Result,
 };
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
 use futures_util::{StreamExt, future, stream};
-use odbc_api::buffers::{AnyColumnBufferSlice, BufferDesc, ColumnarDynBuffer, NullableSlice};
-use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetadata};
+use odbc_api::buffers::BufferDesc;
 use sqlx_core::Either;
-use sqlx_core::column::Column;
 use sqlx_core::common::StatementCache;
 use sqlx_core::executor::{Execute, Executor};
-use sqlx_core::sql_str::SqlStr;
 use sqlx_core::transaction::Transaction;
 use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use command::Command;
 use actor::ConnectionActor;
+use command::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 type PreparedStatement =
     odbc_api::Prepared<odbc_api::handles::StatementConnection<odbc_api::SharedConnection<'static>>>;
 type ExecuteResult = std::result::Result<Either<MssqlQueryResult, MssqlRow>, sqlx_core::Error>;
 type ExecuteSender = flume::Sender<ExecuteResult>;
-
-
 
 /// MSSQL connection backed by an actor thread that owns the ODBC connection.
 pub struct MssqlConnection {
@@ -431,19 +425,19 @@ impl<'c> Executor<'c> for &'c mut MssqlConnection {
     }
 }
 
-
 #[derive(Debug)]
 struct ColumnBinding {
     column: MssqlColumn,
     buffer_desc: BufferDesc,
 }
 
-
 #[cfg(test)]
 mod tests {
+    use odbc_api::DataType;
+
     use crate::connection::helpers::map_buffer_desc;
 
-use super::*;
+    use super::*;
 
     #[test]
     fn buffered_fetch_maps_data_types_to_buffer_descriptors() {

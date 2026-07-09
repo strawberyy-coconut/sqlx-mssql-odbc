@@ -2,14 +2,14 @@
 use crate::connection::{ColumnBinding, ExecuteResult, ExecuteSender};
 use crate::connection::command::Command;
 use crate::{
-    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions, MssqlQueryResult,
-    MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
+     MssqlBufferSettings, MssqlColumn,  MssqlQueryResult,
+    MssqlRow,  MssqlTypeInfo, MssqlValue, MssqlValueKind
 };
-use futures_core::future::BoxFuture;
+
 use futures_core::stream::BoxStream;
-use futures_util::{StreamExt, future, stream};
+use futures_util::{StreamExt, stream};
 use odbc_api::buffers::{AnyColumnBufferSlice, BufferDesc, ColumnarDynBuffer, NullableSlice};
-use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetadata};
+use odbc_api::{ Cursor, DataType, Nullable, ResultSetMetadata};
 use sqlx_core::Either;
 use sqlx_core::column::Column;
 

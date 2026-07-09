@@ -1,25 +1,14 @@
-use crate::connection::helpers::{collect_prepared_columns, send_rows_affected, sql_preview, stream_result_sets};
-use crate::connection::{ExecuteSender, PreparedStatement};
-use crate::{
-    MssqlArguments, MssqlBufferSettings, MssqlColumn, MssqlConnectOptions, MssqlQueryResult,
-    MssqlRow, MssqlStatement, MssqlTypeInfo, MssqlValue, MssqlValueKind, Result,
+use crate::connection::helpers::{
+    collect_prepared_columns, send_rows_affected, sql_preview, stream_result_sets,
 };
-use futures_core::future::BoxFuture;
-use futures_core::stream::BoxStream;
-use futures_util::{StreamExt, future, stream};
-use odbc_api::buffers::{AnyColumnBufferSlice, BufferDesc, ColumnarDynBuffer, NullableSlice};
-use odbc_api::{ConnectionTransitions, Cursor, DataType, Nullable, ResultSetMetadata};
-use sqlx_core::Either;
-use sqlx_core::column::Column;
-use sqlx_core::common::StatementCache;
-use sqlx_core::executor::{Execute, Executor};
-use sqlx_core::sql_str::SqlStr;
-use sqlx_core::transaction::Transaction;
-use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use super::command::Command;
+use crate::connection::{ExecuteSender, PreparedStatement};
+use crate::{MssqlArguments, MssqlBufferSettings, MssqlStatement, MssqlTypeInfo};
 
+use odbc_api::{ConnectionTransitions, Cursor, Nullable};
+
+use super::command::Command;
+use sqlx_core::common::StatementCache;
+use sqlx_core::sql_str::SqlStr;
 
 // ============================================================================
 // ConnectionActor — owns the ODBC connection on a dedicated blocking thread
