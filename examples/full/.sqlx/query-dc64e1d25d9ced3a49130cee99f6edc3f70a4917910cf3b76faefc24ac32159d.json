@@ -1,6 +1,6 @@
 {
   "db_name": "MSSQL",
-  "query": "SELECT COUNT(*) FROM tests",
+  "query": "SELECT COUNT(*) FROM users",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       true
     ]
   },
-  "hash": "371f81b63b65acde0939e98efb40f994612b949991151a77e437e2dc189a818b"
+  "hash": "dc64e1d25d9ced3a49130cee99f6edc3f70a4917910cf3b76faefc24ac32159d"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "MSSQL",
-  "query": "SELECT id, test_description, test_date FROM tests ORDER BY test_date",
+  "query": "SELECT id, description, add_date FROM users ORDER BY add_date",
   "describe": {
     "columns": [
       {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "test_description",
+        "name": "description",
         "type_info": {
           "type_name": "WVARCHAR",
           "length": null
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 2,
-        "name": "test_date",
+        "name": "add_date",
         "type_info": {
           "type_name": "DATETIMEOFFSET",
           "sql_data_type": -155,
@@ -44,5 +44,5 @@
       false
     ]
   },
-  "hash": "81a56fa90e2044e698ae1732845f102de1ceece0590aea92ab2ea14d910e0a31"
+  "hash": "b4d8c359c5f816ef545995dc89ec8b60e28cde5a6ea09bc3b7179b31e034a1a7"
 }
