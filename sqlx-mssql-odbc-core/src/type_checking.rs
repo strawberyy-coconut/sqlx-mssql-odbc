@@ -10,8 +10,8 @@ sqlx_core::impl_type_checking!(
         i64,
         f32,
         f64,
-        String,
-        Vec<u8>,
+        String | &str,
+        Vec<u8> | &[u8],
 
         #[cfg(feature = "spatial")]
         geo_types::Geometry<f64>,
