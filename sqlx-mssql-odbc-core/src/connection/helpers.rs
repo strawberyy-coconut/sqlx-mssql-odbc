@@ -9,7 +9,8 @@ use crate::{
 use futures_core::stream::BoxStream;
 use futures_util::{StreamExt, stream};
 use odbc_api::buffers::{AnyColumnBufferSlice, BufferDesc, ColumnarDynBuffer, NullableSlice};
-use odbc_api::{ Cursor, DataType, Nullable, ResultSetMetadata};
+use odbc_api::handles::{AsStatementRef, Diagnostics, SqlResult, Statement};
+use odbc_api::{Cursor, CursorImpl, DataType, Nullable, ResultSetMetadata};
 use sqlx_core::Either;
 use sqlx_core::column::Column;
 
@@ -67,18 +68,6 @@ pub fn receiver_to_stream<'e>(rx: flume::Receiver<ExecuteResult>) -> BoxStream<'
 // ============================================================================
 // Helper: send query-result rows via the execute channel
 // ============================================================================
-
-pub fn send_rows_affected(
-    rows_affected: Option<usize>,
-    tx: &ExecuteSender,
-) -> std::result::Result<(), sqlx_core::Error> {
-    let rows_affected = rows_affected
-        .unwrap_or(0)
-        .try_into()
-        .map_err(|_| sqlx_core::Error::Protocol("ODBC row count does not fit in u64".to_owned()))?;
-    send_done(tx, rows_affected);
-    Ok(())
-}
 
 pub fn send_done(tx: &ExecuteSender, rows_affected: u64) -> bool {
     tx.send(Ok(Either::Left(MssqlQueryResult::new(rows_affected))))
@@ -144,40 +133,131 @@ pub fn collect_prepared_columns(
     }
 }
 
-pub fn stream_result_sets<C>(
-    mut cursor: C,
+/// Streams every result set of an already-executed statement handle.
+///
+/// ODBC stops at the first result of a batch: later result sets — and the
+/// diagnostics raised by later statements — are only reachable by advancing
+/// with `SQLMoreResults`. This walks the whole batch, emitting one
+/// `MssqlQueryResult` per row-count result and streaming rows from every
+/// column-bearing result set, and returns the first error encountered.
+pub fn drive_result_sets<S>(
+    statement: &mut S,
     settings: MssqlBufferSettings,
     tx: &ExecuteSender,
 ) -> std::result::Result<(), sqlx_core::Error>
 where
-    C: Cursor + ResultSetMetadata,
+    S: Statement,
 {
+    let mut current = statement.as_stmt_ref();
+
     loop {
-        if cursor.num_result_cols().map_err(|error| {
-            crate::error::database_error_with_context(
-                error,
-                "failed to read ODBC result-column count",
-            )
-        })? == 0
-        {
-            send_done(tx, 0);
-        } else if let Some(max_column_size) = settings.max_column_size {
-            let (receiver_open, finished_cursor) =
-                stream_rows_buffered(cursor, settings.batch_size, max_column_size, tx)?;
+        let column_count = current
+            .num_result_cols()
+            .into_result(&current)
+            .map_err(|error| {
+                crate::error::database_error_with_context(
+                    error,
+                    "failed to read ODBC result-column count",
+                )
+            })?;
+
+        if column_count == 0 {
+            // A DML result: report its affected-row count and move on.
+            let rows_affected = current.row_count().into_result(&current).map_err(|error| {
+                crate::error::database_error_with_context(error, "failed to read ODBC row count")
+            })?;
+            let rows_affected = u64::try_from(rows_affected.max(0)).unwrap_or(0);
+            if !send_done(tx, rows_affected) {
+                return Ok(());
+            }
+        } else {
+            // A result set: stream exactly this one, then recover the
+            // statement handle so the walk can continue.
+            // SAFETY: `num_result_cols() > 0`, so the handle is positioned on a
+            // result set — i.e. it is in cursor state.
+            let cursor = unsafe { CursorImpl::new(current) };
+            let (receiver_open, finished) = stream_one_result_set(cursor, settings, tx)?;
             if !receiver_open {
                 return Ok(());
             }
-            cursor = finished_cursor;
-        } else if !stream_rows_unbuffered(&mut cursor, tx)? {
-            return Ok(());
+            current = finished.into_stmt();
         }
 
-        match cursor.more_results().map_err(|error| {
-            crate::error::database_error_with_context(error, "failed to advance ODBC result set")
-        })? {
-            Some(next_cursor) => cursor = next_cursor,
-            None => return Ok(()),
+        match unsafe { current.more_results() } {
+            SqlResult::Success(()) | SqlResult::SuccessWithInfo(()) => {}
+            SqlResult::NoData => return Ok(()),
+            other => {
+                return Err(statement_error(
+                    other,
+                    &current,
+                    "failed to advance ODBC result set",
+                ));
+            }
         }
+    }
+}
+
+/// Advances through every remaining result set, discarding rows, and returns
+/// the first error encountered.
+///
+/// Used where only success/failure matters, e.g. running a migration batch
+/// before recording it as applied.
+#[cfg(feature = "migrate")]
+pub fn drain_result_sets<S>(statement: &mut S) -> std::result::Result<(), sqlx_core::Error>
+where
+    S: Statement,
+{
+    loop {
+        match unsafe { statement.more_results() } {
+            SqlResult::Success(()) | SqlResult::SuccessWithInfo(()) => {}
+            SqlResult::NoData => return Ok(()),
+            other => {
+                return Err(statement_error(
+                    other,
+                    statement,
+                    "failed to advance ODBC result set",
+                ));
+            }
+        }
+    }
+}
+
+/// Streams the single result set the cursor is currently positioned on,
+/// returning the cursor so the caller can continue with further result sets.
+pub fn stream_one_result_set<C>(
+    cursor: C,
+    settings: MssqlBufferSettings,
+    tx: &ExecuteSender,
+) -> std::result::Result<(bool, C), sqlx_core::Error>
+where
+    C: Cursor + ResultSetMetadata,
+{
+    if let Some(max_column_size) = settings.max_column_size {
+        return stream_rows_buffered(cursor, settings.batch_size, max_column_size, tx);
+    }
+
+    let mut cursor = cursor;
+    let receiver_open = stream_rows_unbuffered(&mut cursor, tx)?;
+    Ok((receiver_open, cursor))
+}
+
+/// Converts an unsuccessful `SqlResult` into a [`sqlx_core::Error`], pulling
+/// the ODBC diagnostics off the statement handle.
+fn statement_error(
+    result: SqlResult<()>,
+    handle: &impl Diagnostics,
+    context: &str,
+) -> sqlx_core::Error {
+    match result {
+        SqlResult::Error { .. } => {
+            let error = result
+                .into_result(handle)
+                .expect_err("SqlResult::Error must convert to an error");
+            crate::error::database_error_with_context(error, context.to_owned()).into()
+        }
+        // `NeedData`/`StillExecuting` are not expected while walking a
+        // synchronous batch.
+        other => sqlx_core::Error::Protocol(format!("{context}: unexpected ODBC status {other:?}")),
     }
 }
 
