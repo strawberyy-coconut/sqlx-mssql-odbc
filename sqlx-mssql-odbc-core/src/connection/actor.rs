@@ -1,9 +1,10 @@
-use crate::connection::helpers::{
-    collect_prepared_columns, send_rows_affected, sql_preview, stream_result_sets,
-};
+use crate::connection::helpers::{collect_prepared_columns, drive_result_sets, sql_preview};
+#[cfg(feature = "migrate")]
+use crate::connection::helpers::drain_result_sets;
 use crate::connection::{ExecuteSender, PreparedStatement};
 use crate::{MssqlArguments, MssqlBufferSettings, MssqlStatement, MssqlTypeInfo};
 
+use odbc_api::handles::AsStatementRef;
 use odbc_api::{ConnectionTransitions, Cursor, Nullable};
 
 use super::command::Command;
@@ -136,9 +137,7 @@ impl ConnectionActor {
 
         if persistent && has_arguments {
             if let Some(prepared) = self.stmt_cache.get_mut(sql.as_str()) {
-                // Execute from cache — scope the execute result so the borrow
-                // on `prepared` is released before we call row_count().
-                {
+                let opt_cursor = {
                     let conn_guard = self.conn.lock().map_err(|_| {
                         sqlx_core::Error::Protocol(
                             "ODBC execute: failed to lock connection".to_owned(),
@@ -153,28 +152,24 @@ impl ConnectionActor {
                         })
                     })?;
                     drop(conn_guard);
+                    opt_cursor
+                };
 
-                    // Use the cursor directly from the first & only execution.
-                    if let Some(cursor) = opt_cursor {
-                        return stream_result_sets(cursor, self.buffer_settings, tx);
-                    }
-                    // opt_cursor is None → dropped here → borrow on prepared released
+                // Walk every result set of the batch. A `None` cursor only
+                // means the first result carried no columns (e.g. a leading
+                // DML statement) — later result sets and diagnostics still
+                // have to be read. `into_stmt` keeps the cursor open, so the
+                // handle is inspected from the first result.
+                if opt_cursor.is_none() {
+                    // Drop the empty cursor first so the borrow on `prepared`
+                    // ends before taking a fresh statement reference.
+                    drop(opt_cursor);
+                    let mut handle = prepared.as_stmt_ref();
+                    return drive_result_sets(&mut handle, self.buffer_settings, tx);
                 }
-
-                // Now prepared is free to borrow again for row_count().
-                let conn_guard = self.conn.lock().map_err(|_| {
-                    sqlx_core::Error::Protocol("ODBC execute: failed to lock connection".to_owned())
-                })?;
-                let ra = prepared.row_count().map_err(|error| {
-                    crate::error::database_error_with_context_lazy(error, || {
-                        format!(
-                            "failed to read ODBC row count for cached statement: `{}`",
-                            sql_preview(sql.as_str())
-                        )
-                    })
-                })?;
-                drop(conn_guard);
-                return send_rows_affected(ra, tx);
+                let cursor = opt_cursor.expect("checked `is_none` above");
+                let mut handle = cursor.into_stmt();
+                return drive_result_sets(&mut handle, self.buffer_settings, tx);
             } else {
                 // Prepare and cache
                 let mut prepared =
@@ -190,19 +185,16 @@ impl ConnectionActor {
                             })
                         })?;
 
-                // Execute once. If the statement returns a cursor, use it
-                // directly — do NOT re-execute (that would double-run
-                // INSERT/UPDATE/DELETE with OUTPUT, causing incorrect
-                // duplicate-key violations on otherwise-empty tables).
-                // Use `match` (not `if let`) so the borrow on `prepared` is
-                // released in the `None` arm before we access `prepared` again.
-                match {
+                // Execute exactly once. Re-executing would double-run
+                // INSERT/UPDATE/DELETE (causing duplicate-key violations on
+                // otherwise-empty tables).
+                let opt_cursor = {
                     let conn_guard = self.conn.lock().map_err(|_| {
                         sqlx_core::Error::Protocol(
                             "ODBC execute: failed to lock connection".to_owned(),
                         )
                     })?;
-                    let result = prepared.execute(parameters.as_slice()).map_err(|error| {
+                    let opt_cursor = prepared.execute(parameters.as_slice()).map_err(|error| {
                         crate::error::database_error_with_context_lazy(error, || {
                             format!(
                                 "failed to execute cached ODBC statement: `{}`",
@@ -211,26 +203,28 @@ impl ConnectionActor {
                         })
                     })?;
                     drop(conn_guard);
-                    result
-                } {
-                    Some(cursor) => {
-                        // The statement won't be cached from this path since the
-                        // cursor borrows it — caching happens via handle_prepare().
-                        return stream_result_sets(cursor, self.buffer_settings, tx);
+                    opt_cursor
+                };
+
+                if opt_cursor.is_none() {
+                    // Drop the empty cursor first so the borrow on `prepared`
+                    // ends before taking a fresh statement reference.
+                    drop(opt_cursor);
+                    let outcome = {
+                        let mut handle = prepared.as_stmt_ref();
+                        drive_result_sets(&mut handle, self.buffer_settings, tx)
+                    };
+                    if outcome.is_ok() {
+                        self.stmt_cache.insert(sql.as_str(), prepared);
                     }
-                    None => {} // borrow on `prepared` released here
+                    return outcome;
                 }
 
-                let ra = prepared.row_count().map_err(|error| {
-                    crate::error::database_error_with_context_lazy(error, || {
-                        format!(
-                            "failed to read ODBC row count for cached statement: `{}`",
-                            sql_preview(sql.as_str())
-                        )
-                    })
-                })?;
-                self.stmt_cache.insert(sql.as_str(), prepared);
-                return send_rows_affected(ra, tx);
+                let cursor = opt_cursor.expect("checked `is_none` above");
+                let mut handle = cursor.into_stmt();
+                // The cursor borrows the prepared statement, so it is not
+                // cached on this path (that happens in `handle_prepare`).
+                return drive_result_sets(&mut handle, self.buffer_settings, tx);
             }
         } else {
             // Unprepared (one-shot) path
@@ -242,7 +236,7 @@ impl ConnectionActor {
                     )
                 })
             })?;
-            if let Some(cursor) = statement
+            let cursor = statement
                 .execute(sql.as_str(), parameters.as_slice())
                 .map_err(|error| {
                     crate::error::database_error_with_context_lazy(error, || {
@@ -251,19 +245,18 @@ impl ConnectionActor {
                             sql_preview(sql.as_str())
                         )
                     })
-                })?
-            {
-                return stream_result_sets(cursor, self.buffer_settings, tx);
+                })?;
+
+            // A `None` cursor only means the first result had no columns; the
+            // batch must still be walked for later results and errors.
+            if cursor.is_none() {
+                drop(cursor);
+                let mut handle = statement.into_handle();
+                return drive_result_sets(&mut handle, self.buffer_settings, tx);
             }
-            let rows_affected = statement.row_count().map_err(|error| {
-                crate::error::database_error_with_context_lazy(error, || {
-                    format!(
-                        "failed to read ODBC row count for query: `{}`",
-                        sql_preview(sql.as_str())
-                    )
-                })
-            })?;
-            send_rows_affected(rows_affected, tx)
+            let cursor = cursor.expect("checked `is_none` above");
+            let mut handle = cursor.into_stmt();
+            drive_result_sets(&mut handle, self.buffer_settings, tx)
         }
     }
 
@@ -600,12 +593,42 @@ impl ConnectionActor {
             })?;
         }
 
-        conn_guard.execute(sql, (), None).map_err(|error| {
-            sqlx_core::Error::from(crate::error::database_error_with_context(
-                error,
-                format!("migration {version} failed"),
-            ))
-        })?;
+        // Run the whole migration batch and drain every result set: ODBC only
+        // reports a statement that fails after the first one once the results
+        // are advanced, so the batch must be walked before the migration is
+        // recorded as applied.
+        let batch = (|| -> std::result::Result<(), sqlx_core::Error> {
+            let mut statement = conn_guard.preallocate().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("failed to allocate statement for migration {version}"),
+                ))
+            })?;
+            let cursor = statement.execute(sql, ()).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("migration {version} failed"),
+                ))
+            })?;
+
+            if cursor.is_none() {
+                drop(cursor);
+                let mut handle = statement.into_handle();
+                return drain_result_sets(&mut handle);
+            }
+            let cursor = cursor.expect("checked `is_none` above");
+            let mut handle = cursor.into_stmt();
+            drain_result_sets(&mut handle)
+        })();
+
+        if let Err(error) = batch {
+            if !no_tx {
+                // Don't leave the connection inside a half-applied transaction.
+                let _ = conn_guard.rollback();
+                let _ = conn_guard.set_autocommit(true);
+            }
+            return Err(error);
+        }
 
         conn_guard.execute(insert_sql, (), None).map_err(|error| {
             sqlx_core::Error::from(crate::error::database_error_with_context(
@@ -656,12 +679,40 @@ impl ConnectionActor {
             })?;
         }
 
-        conn_guard.execute(sql, (), None).map_err(|error| {
-            sqlx_core::Error::from(crate::error::database_error_with_context(
-                error,
-                format!("revert migration {version} failed"),
-            ))
-        })?;
+        // See `handle_apply_migration`: the whole batch must be drained so a
+        // statement that fails after the first one is surfaced.
+        let batch = (|| -> std::result::Result<(), sqlx_core::Error> {
+            let mut statement = conn_guard.preallocate().map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("failed to allocate statement for revert migration {version}"),
+                ))
+            })?;
+            let cursor = statement.execute(sql, ()).map_err(|error| {
+                sqlx_core::Error::from(crate::error::database_error_with_context(
+                    error,
+                    format!("revert migration {version} failed"),
+                ))
+            })?;
+
+            if cursor.is_none() {
+                drop(cursor);
+                let mut handle = statement.into_handle();
+                return drain_result_sets(&mut handle);
+            }
+            let cursor = cursor.expect("checked `is_none` above");
+            let mut handle = cursor.into_stmt();
+            drain_result_sets(&mut handle)
+        })();
+
+        if let Err(error) = batch {
+            if !no_tx {
+                // Don't leave the connection inside a half-reverted transaction.
+                let _ = conn_guard.rollback();
+                let _ = conn_guard.set_autocommit(true);
+            }
+            return Err(error);
+        }
 
         conn_guard.execute(delete_sql, (), None).map_err(|error| {
             sqlx_core::Error::from(crate::error::database_error_with_context(

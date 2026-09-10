@@ -2,9 +2,9 @@ use futures_util::TryStreamExt;
 use sqlx_core::column::Column;
 use sqlx_core::connection::{ConnectOptions, Connection};
 use sqlx_core::executor::Executor;
-use sqlx_core::migrate::{MigrateDatabase, Migrator};
+use sqlx_core::migrate::{Migrate, MigrateDatabase, Migration, MigrationType, Migrator};
 use sqlx_core::row::Row;
-use sqlx_core::sql_str::AssertSqlSafe;
+use sqlx_core::sql_str::{AssertSqlSafe, SqlSafeStr};
 use sqlx_core::statement::Statement;
 use sqlx_core::value::ValueRef;
 use sqlx_core::Either;
@@ -773,6 +773,191 @@ async fn integration_migration_and_compile_time_queries(
     }
 
     result?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests: multi-statement batches (issue #22)
+// ---------------------------------------------------------------------------
+// ODBC exposes one result set per `SQLExecDirect`; later result sets — and,
+// crucially, the diagnostics raised by later statements — are only reachable
+// by advancing with `SQLMoreResults`. The tests below pin that behaviour:
+//
+//   * `sqlx_batch_error_after_first_statement_is_surfaced`
+//   * `sqlx_batch_returns_rows_from_result_set_after_dml`
+//   * `sqlx_batch_execute_sums_rows_affected_across_statements`
+//   * `sqlx_migration_mid_batch_failure_is_not_recorded`
+//
+// The first three exercise the query path; the last one is the original
+// migration reproducer from the issue (a partially applied migration must not
+// be recorded as applied).
+// ---------------------------------------------------------------------------
+
+/// A statement that fails *after* the first statement in a batch must still
+/// surface as an error rather than being silently dropped.
+#[tokio::test]
+async fn sqlx_batch_error_after_first_statement_is_surfaced(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
+
+    let table = test_table_name("batch_error");
+    drop_table_if_exists(&mut conn, &table).await?;
+    let create = format!("CREATE TABLE {table} (id INTEGER NOT NULL PRIMARY KEY)");
+    sqlx_core::query::query(AssertSqlSafe(create))
+        .execute(&mut conn)
+        .await?;
+
+    // The second statement of the batch violates the primary key; the first
+    // one inserts id = 6. The batch must be reported as failed.
+    //
+    // A *lone* failing statement is covered separately by
+    // `invalid_query_errors_are_reported_as_database_errors`, so it is
+    // deliberately not used as a control here — this test isolates the
+    // multi-statement case.
+    let batch = format!(
+        "INSERT INTO {table} (id) VALUES (6); INSERT INTO {table} (id) VALUES (6);"
+    );
+    let result = sqlx_core::query::query(AssertSqlSafe(batch))
+        .execute(&mut conn)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a failure in the second statement of a batch must not be swallowed; got {result:?}"
+    );
+
+    drop_table_if_exists(&mut conn, &table).await?;
+    conn.close().await?;
+    Ok(())
+}
+
+/// A result set that follows a DML statement in the same batch must be read.
+///
+/// The first result of the batch is the `INSERT`'s row count (which carries no
+/// columns), so a driver that only inspects the first result returns no rows.
+#[tokio::test]
+async fn sqlx_batch_returns_rows_from_result_set_after_dml(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
+
+    let table = test_table_name("batch_select");
+    drop_table_if_exists(&mut conn, &table).await?;
+    let create = format!("CREATE TABLE {table} (id INTEGER NOT NULL)");
+    sqlx_core::query::query(AssertSqlSafe(create))
+        .execute(&mut conn)
+        .await?;
+
+    let batch = format!(
+        "INSERT INTO {table} (id) VALUES (42); SELECT id FROM {table} ORDER BY id;"
+    );
+    let rows = sqlx_core::query::query(AssertSqlSafe(batch))
+        .fetch_all(&mut conn)
+        .await?;
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "the SELECT following the INSERT should yield exactly one row"
+    );
+    assert_eq!(rows[0].try_get::<i32, _>(0)?, 42);
+
+    drop_table_if_exists(&mut conn, &table).await?;
+    conn.close().await?;
+    Ok(())
+}
+
+/// `rows_affected` from `execute` must account for every statement in a batch,
+/// not just the first.
+#[tokio::test]
+async fn sqlx_batch_execute_sums_rows_affected_across_statements(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
+
+    let table = test_table_name("batch_counts");
+    drop_table_if_exists(&mut conn, &table).await?;
+    let create = format!("CREATE TABLE {table} (id INTEGER NOT NULL)");
+    sqlx_core::query::query(AssertSqlSafe(create))
+        .execute(&mut conn)
+        .await?;
+
+    let batch = format!(
+        "INSERT INTO {table} (id) VALUES (1); \
+         INSERT INTO {table} (id) VALUES (2); \
+         INSERT INTO {table} (id) VALUES (3);"
+    );
+    let result = sqlx_core::query::query(AssertSqlSafe(batch))
+        .execute(&mut conn)
+        .await?;
+
+    assert_eq!(
+        result.rows_affected(),
+        3,
+        "rows_affected should sum every statement in the batch"
+    );
+
+    drop_table_if_exists(&mut conn, &table).await?;
+    conn.close().await?;
+    Ok(())
+}
+
+/// Original reproducer from issue #22: a migration whose batch fails *after*
+/// the first statement must return `Err` and must **not** be recorded as
+/// applied, otherwise the half-created schema can never be repaired.
+#[tokio::test]
+async fn sqlx_migration_mid_batch_failure_is_not_recorded(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = get_test_conn().await?;
+
+    let data_table = test_table_name("mig_batch_data");
+    let migrations_table = test_table_name("mig_batch_tracking");
+    drop_table_if_exists(&mut conn, &data_table).await?;
+    drop_table_if_exists(&mut conn, &migrations_table).await?;
+    conn.ensure_migrations_table(migrations_table.as_str()).await?;
+
+    // Seed migration: succeed and get recorded.
+    let seed_sql = format!("CREATE TABLE {data_table} (id INT NOT NULL PRIMARY KEY)");
+    let seed = Migration::new(
+        1,
+        "seed".into(),
+        MigrationType::Simple,
+        AssertSqlSafe(seed_sql).into_sql_str(),
+        false,
+    );
+    conn.apply(migrations_table.as_str(), &seed).await?;
+
+    // Batched migration: the second statement violates the primary key.
+    let failing_sql = format!(
+        "INSERT INTO {data_table} (id) VALUES (5); \
+         INSERT INTO {data_table} (id) VALUES (5);"
+    );
+    let batched = Migration::new(
+        99,
+        "batched".into(),
+        MigrationType::Simple,
+        AssertSqlSafe(failing_sql).into_sql_str(),
+        false,
+    );
+
+    let result = conn.apply(migrations_table.as_str(), &batched).await;
+    assert!(
+        result.is_err(),
+        "a mid-batch failure must make `apply` return Err; got {result:?}"
+    );
+
+    let applied: Vec<i64> = conn
+        .list_applied_migrations(migrations_table.as_str())
+        .await?
+        .into_iter()
+        .map(|migration| migration.version)
+        .collect();
+    assert!(
+        !applied.contains(&99),
+        "a failed migration must not be recorded as applied; applied = {applied:?}"
+    );
+
+    drop_table_if_exists(&mut conn, &data_table).await?;
+    drop_table_if_exists(&mut conn, &migrations_table).await?;
+    conn.close().await?;
     Ok(())
 }
 
