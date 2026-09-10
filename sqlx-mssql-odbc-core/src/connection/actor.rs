@@ -35,7 +35,14 @@ impl ConnectionActor {
                     persistent,
                     response,
                 } => {
-                    let _ = self.handle_execute(sql, args, persistent, &response);
+                    if let Err(error) = self.handle_execute(sql, args, persistent, &response) {
+                        // `handle_execute` reports results through `response`.
+                        // When it fails early (e.g. the statement itself failed
+                        // to execute) nothing has been sent yet, so discarding
+                        // the error would leave the consumer with an empty
+                        // stream and a silent success. Forward it instead.
+                        let _ = response.send(Err(error));
+                    }
                 }
                 Command::Prepare { sql, response } => {
                     let _ = response.send(self.handle_prepare(sql));
@@ -67,6 +74,13 @@ impl ConnectionActor {
                 }
                 Command::ListMigrations { sql, response } => {
                     let _ = response.send(self.handle_list_migrations(&sql));
+                }
+                Command::StatementCacheSize { response } => {
+                    let _ = response.send(self.stmt_cache.len());
+                }
+                Command::ClearStatementCache { response } => {
+                    self.stmt_cache.clear();
+                    let _ = response.send(());
                 }
                 #[cfg(feature = "migrate")]
                 Command::ApplyMigration {

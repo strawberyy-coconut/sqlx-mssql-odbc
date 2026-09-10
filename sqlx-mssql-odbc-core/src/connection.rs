@@ -307,18 +307,19 @@ impl sqlx_core::connection::Connection for MssqlConnection {
     where
         Self::Database: sqlx_core::database::HasStatementCache,
     {
-        // The statement cache lives on the actor thread; we can't query it
-        // synchronously. Return 0 — callers use this only for diagnostics.
-        0
+        // The cache lives on the actor thread, so ask it over the command
+        // channel. This is only used for diagnostics, so if the actor is gone
+        // (or the reply channel closed) degrade to reporting zero.
+        send_command_blocking(&self.cmd_tx, |response| Command::StatementCacheSize { response })
+            .unwrap_or(0)
     }
 
     async fn clear_cached_statements(&mut self) -> std::result::Result<(), sqlx_core::Error>
     where
         Self::Database: sqlx_core::database::HasStatementCache,
     {
-        // The cache lives on the actor; clearing it requires a new command.
-        // For now this is a no-op since the cache is per-connection and
-        // bounded by `statement_cache_capacity`.
+        send_command_async(&self.cmd_tx, |response| Command::ClearStatementCache { response })
+            .await?;
         Ok(())
     }
 }

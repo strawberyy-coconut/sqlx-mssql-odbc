@@ -428,7 +428,17 @@ async fn sqlx_prepare_reports_basic_metadata(
         ))
         .await?;
 
-    assert_eq!(statement.parameters(), Some(sqlx_core::Either::Right(1)));
+    // The driver describes parameter types from the ODBC metadata, so this
+    // returns `Either::Left(&[MssqlTypeInfo])` (falling back to
+    // `Either::Right(count)` only when a parameter cannot be described).
+    let parameters = statement
+        .parameters()
+        .expect("prepared statement should report its parameters");
+    let parameter_count = match parameters {
+        sqlx_core::Either::Left(types) => types.len(),
+        sqlx_core::Either::Right(count) => count,
+    };
+    assert_eq!(parameter_count, 1, "expected exactly one parameter");
     if let Some(column) = statement.columns().first() {
         assert_eq!(sqlx_core::column::Column::name(column), "answer");
     }

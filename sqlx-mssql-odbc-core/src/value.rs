@@ -30,6 +30,7 @@ impl MssqlValue {
             MssqlValueKind::Integer(value) => Some(i64::from(*value)),
             MssqlValueKind::BigInt(value) => Some(*value),
             MssqlValueKind::Text(value) => parse_integer_text(value),
+            MssqlValueKind::Decimal { text, .. } => parse_integer_text(&normalize_decimal(text)),
             _ => None,
         }
     }
@@ -44,6 +45,7 @@ impl MssqlValue {
             MssqlValueKind::Integer(value) => Some(f64::from(*value)),
             MssqlValueKind::BigInt(value) => Some(*value as f64),
             MssqlValueKind::Text(value) => value.trim().parse().ok(),
+            MssqlValueKind::Decimal { text, .. } => normalize_decimal(text).parse().ok(),
             _ => None,
         }
     }
@@ -52,6 +54,7 @@ impl MssqlValue {
     pub fn as_str(&self) -> Option<Cow<'_, str>> {
         match &self.kind {
             MssqlValueKind::Text(value) => Some(Cow::Borrowed(value)),
+            MssqlValueKind::Decimal { text, .. } => Some(Cow::Borrowed(text)),
             MssqlValueKind::Guid(bytes) => {
                 let guid_str = uuid_guid_to_string(bytes);
                 Some(Cow::Owned(guid_str))
@@ -65,6 +68,7 @@ impl MssqlValue {
         match &self.kind {
             MssqlValueKind::Binary(value) => Some(Cow::Borrowed(value)),
             MssqlValueKind::Text(value) => Some(Cow::Borrowed(value.as_bytes())),
+            MssqlValueKind::Decimal { text, .. } => Some(Cow::Borrowed(text.as_bytes())),
             MssqlValueKind::Guid(bytes) => Some(Cow::Borrowed(bytes)),
             _ => None,
         }
@@ -108,6 +112,7 @@ impl<'r> MssqlValueRef<'r> {
     pub fn as_str(&self) -> Option<&'r str> {
         match &self.value.kind {
             MssqlValueKind::Text(value) => Some(value),
+            MssqlValueKind::Decimal { text, .. } => Some(text),
             MssqlValueKind::Guid(bytes) => {
                 // We cannot return a borrowed &str for Guid since we'd need to allocate.
                 // Fall through to None; the caller should use as_bytes() or to_owned().
@@ -123,6 +128,7 @@ impl<'r> MssqlValueRef<'r> {
         match &self.value.kind {
             MssqlValueKind::Binary(value) => Some(value),
             MssqlValueKind::Text(value) => Some(value.as_bytes()),
+            MssqlValueKind::Decimal { text, .. } => Some(text.as_bytes()),
             MssqlValueKind::Guid(bytes) => Some(bytes),
             _ => None,
         }
@@ -139,6 +145,7 @@ impl<'r> MssqlValueRef<'r> {
             MssqlValueKind::Real(value) => Some(*value != 0.0),
             MssqlValueKind::Double(value) => Some(*value != 0.0),
             MssqlValueKind::Text(value) => parse_bool_text(value),
+            MssqlValueKind::Decimal { text, .. } => parse_bool_text(&normalize_decimal(text)),
             _ => None,
         }
     }
@@ -314,6 +321,17 @@ fn parse_bool_text(value: &str) -> Option<bool> {
     }
 }
 
+/// Normalizes a driver-rendered decimal string, tolerating a locale-specific
+/// decimal separator of `,`.
+fn normalize_decimal(text: &str) -> Cow<'_, str> {
+    let trimmed = text.trim();
+    if trimmed.contains(',') {
+        Cow::Owned(trimmed.replace(',', "."))
+    } else {
+        Cow::Borrowed(trimmed)
+    }
+}
+
 fn parse_integer_text(value: &str) -> Option<i64> {
     let value = value.trim();
 
@@ -373,6 +391,15 @@ pub enum MssqlValueKind {
     Time(odbc_api::sys::Time),
     /// Timestamp value.
     Timestamp(odbc_api::sys::Timestamp),
+    /// Exact numeric value (`DECIMAL`/`NUMERIC`), rendered as text by the driver.
+    Decimal {
+        /// Decimal digits exactly as rendered by the driver.
+        text: String,
+        /// Total number of digits.
+        precision: usize,
+        /// Number of decimal digits.
+        scale: i16,
+    },
 }
 
 impl MssqlValueKind {
@@ -387,6 +414,12 @@ impl MssqlValueKind {
             Self::Double(_) => odbc_api::DataType::Double,
             Self::Bit(_) => odbc_api::DataType::Bit,
             Self::Text(_) => odbc_api::DataType::WVarchar { length: None },
+            Self::Decimal {
+                precision, scale, ..
+            } => odbc_api::DataType::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
             Self::Binary(_) => odbc_api::DataType::Varbinary { length: None },
             Self::Guid(_) => odbc_api::DataType::Other {
                 data_type: odbc_api::sys::SqlDataType(-11),

@@ -422,7 +422,10 @@ impl sqlx_core::types::Type<crate::Mssql> for [u8] {
     }
 
     fn compatible(ty: &crate::MssqlTypeInfo) -> bool {
-        ty.data_type().accepts_binary_data()
+        // `Decode<Vec<u8>>` reads character values as bytes too (see
+        // `MssqlValueRef::as_bytes`), so both binary and text columns are
+        // byte-compatible.
+        ty.data_type().accepts_binary_data() || ty.data_type().accepts_character_data()
     }
 }
 

@@ -153,12 +153,12 @@
 //! # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //! let mut conn = MssqlConnection::connect("mssql://…").await?;
 //!
-//! conn.begin().await?;
+//! let mut tx = conn.begin().await?;
 //! sqlx_core::query::query("INSERT INTO users (name) VALUES (@p1)")
 //!     .bind("Alice")
-//!     .execute(&mut conn)
+//!     .execute(&mut *tx)
 //!     .await?;
-//! conn.commit().await?;
+//! tx.commit().await?;
 //! # Ok(())
 //! # }
 //! ```

@@ -376,11 +376,30 @@ pub fn buffered_column_values(
         }
         BufferDesc::Text { .. } => {
             let text = expect_buffer_slice(slice.as_text(), desc)?;
+            // `BufferDesc::Text` is shared by character columns and by
+            // DECIMAL/NUMERIC columns, which have no dedicated ODBC buffer
+            // type. Preserve the exact numeric type so numeric Rust types
+            // remain compatible with the decoded value.
+            let decimal = match binding.column.type_info().data_type() {
+                DataType::Decimal { precision, scale }
+                | DataType::Numeric { precision, scale } => Some((precision, scale)),
+                _ => None,
+            };
             text.iter()
                 .map(|value| {
                     value
                         .map(|bytes| {
-                            MssqlValueKind::Text(String::from_utf8_lossy(bytes).into_owned())
+                            let text = String::from_utf8_lossy(bytes).into_owned();
+                            match decimal {
+                                Some((precision, scale)) => {
+                                    MssqlValueKind::Decimal {
+                                        text,
+                                        precision,
+                                        scale,
+                                    }
+                                }
+                                None => MssqlValueKind::Text(text),
+                            }
                         })
                         .unwrap_or(MssqlValueKind::Null)
                 })
@@ -604,6 +623,25 @@ pub fn fetch_value(
                     MssqlValueKind::Text(String::from_utf16_lossy(
                         &value.iter().map(|&b| b as u16).collect::<Vec<_>>(),
                     ))
+                }
+            } else {
+                MssqlValueKind::Null
+            }
+        }
+        DataType::Decimal { precision, scale } | DataType::Numeric { precision, scale } => {
+            let mut value = Vec::new();
+            if row
+                .get_wide_text(column_number, &mut value)
+                .map_err(|error| {
+                    crate::error::database_error_with_context_lazy(error, || {
+                        fetch_context(column, data_type)
+                    })
+                })?
+            {
+                MssqlValueKind::Decimal {
+                    text: String::from_utf16_lossy(&value),
+                    precision,
+                    scale,
                 }
             } else {
                 MssqlValueKind::Null

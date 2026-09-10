@@ -72,4 +72,12 @@ pub enum Command {
         no_tx: bool,
         response: flume::Sender<std::result::Result<std::time::Duration, sqlx_core::Error>>,
     },
+    /// Reports how many prepared statements are currently cached.
+    StatementCacheSize {
+        response: flume::Sender<usize>,
+    },
+    /// Clears every cached prepared statement.
+    ClearStatementCache {
+        response: flume::Sender<()>,
+    },
 }
